@@ -122,7 +122,7 @@ MIT License. See [LICENSE](LICENSE).
 ## References
 
 - **K1993**: Ryo Kobayashi, "Modeling and numerical simulations of dendritic crystal growth," *Physica D: Nonlinear Phenomena* 63(3-4), 410-423, 1993. DOI: [10.1016/0167-2789(93)90120-P](https://doi.org/10.1016/0167-2789(93)90120-P).
-- **K2002**: Ryo Kobayashi, "フェーズフィールドモデル入門 / Introduction to Phase Field Model," 2002.
+- **K2002**: Ryo Kobayashi (小林亮), "フェーズフィールドモデル入門," unpublished Japanese notes on the phase-field model, private communication, 2002.
 - **WMS1992**: A. A. Wheeler, B. T. Murray, and R. J. Schaefer, "Computation of dendrites using a phase field model," NISTIR 4894, 1992. DOI: [10.6028/NIST.IR.4894](https://doi.org/10.6028/NIST.IR.4894).
 - **T2014**: Tomohiro Takaki, "Phase-field Modeling and Simulations of Dendrite Growth," *ISIJ International* 54(2), 437-444, 2014. DOI: [10.2355/isijinternational.54.437](https://doi.org/10.2355/isijinternational.54.437).
 - **S2014**: R. Sanal, "Numerical Simulation of Dendritic crystal growth using Phase Field method," arXiv:1412.3197, 2014. [arXiv link](https://arxiv.org/abs/1412.3197).

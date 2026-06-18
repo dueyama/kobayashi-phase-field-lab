@@ -1280,7 +1280,14 @@ function compactNumber(value: number): string {
   return value.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
 }
 
-const modelReferences = [
+type ModelReference = {
+  key: string;
+  authors: string;
+  meta: string;
+  url?: string;
+};
+
+const modelReferences: ModelReference[] = [
   {
     key: 'K1993',
     authors: 'Ryo Kobayashi',
@@ -1289,9 +1296,8 @@ const modelReferences = [
   },
   {
     key: 'K2002',
-    authors: '小林亮',
-    meta: '“フェーズフィールドモデル入門 / Introduction to Phase Field Model,” 2002. Public source lookup link; local copy is not distributed.',
-    url: 'https://www.google.com/search?q=%E5%B0%8F%E6%9E%97%E4%BA%AE+%E3%83%95%E3%82%A7%E3%83%BC%E3%82%BA%E3%83%95%E3%82%A3%E3%83%BC%E3%83%AB%E3%83%89%E3%83%A2%E3%83%87%E3%83%AB%E5%85%A5%E9%96%80+2002'
+    authors: 'Ryo Kobayashi (小林亮)',
+    meta: '“フェーズフィールドモデル入門,” unpublished Japanese notes on the phase-field model, private communication, 2002.'
   },
   {
     key: 'WMS1992',
@@ -1322,7 +1328,10 @@ const modelReferences = [
 function cite(referenceKey: string): string {
   const reference = modelReferences.find((candidate) => candidate.key === referenceKey);
   if (!reference) return `<span class="citation">${referenceKey}</span>`;
-  return `<a class="citation" href="${reference.url}" target="_blank" rel="noreferrer">${referenceKey}</a>`;
+  if (!reference.url) {
+    return `<span class="citation" title="${escapeHtml(reference.meta)}">${referenceKey}</span>`;
+  }
+  return `<a class="citation" href="${escapeHtml(reference.url)}" target="_blank" rel="noreferrer">${referenceKey}</a>`;
 }
 
 function mathInline(markup: string, label: string): string {
@@ -1531,11 +1540,22 @@ function referencesTemplate(): string {
     <article class="content-page">
       <div class="content-inner">
         <h1>References</h1>
-        <p>Model explanations and reproduction presets cite the sources below by stable reference key. This app uses bibliographic metadata, public source links, and simulator-generated outputs rather than reproduced paper figures.</p>
+        <p>Model explanations and reproduction presets cite the sources below by stable reference key. This app uses bibliographic/source metadata and simulator-generated outputs rather than reproduced paper figures.</p>
         ${referenceList('reference')}
       </div>
     </article>
   `;
+}
+
+function referenceCopy(reference: ModelReference): string {
+  const copy = `
+    <div class="reference-title">${reference.authors}</div>
+    <div class="reference-meta">${reference.meta}</div>
+  `;
+  if (!reference.url) {
+    return `<div class="reference-copy">${copy}</div>`;
+  }
+  return `<a class="reference-copy reference-link" href="${escapeHtml(reference.url)}" target="_blank" rel="noreferrer">${copy}</a>`;
 }
 
 function referenceList(idPrefix: string): string {
@@ -1546,10 +1566,7 @@ function referenceList(idPrefix: string): string {
           (reference) => `
             <div class="reference-item" id="${idPrefix}-${reference.key.toLowerCase()}">
               <div class="reference-index">${reference.key}</div>
-              <a class="reference-copy reference-link" href="${reference.url}" target="_blank" rel="noreferrer">
-                <div class="reference-title">${reference.authors}</div>
-                <div class="reference-meta">${reference.meta}</div>
-              </a>
+              ${referenceCopy(reference)}
             </div>
           `
         )
