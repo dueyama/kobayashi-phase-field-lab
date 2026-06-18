@@ -1316,12 +1316,6 @@ const modelReferences: ModelReference[] = [
     authors: 'R. Sanal',
     meta: '“Numerical Simulation of Dendritic crystal growth using Phase Field method,” arXiv: 1412.3197, 2014.',
     url: 'https://arxiv.org/abs/1412.3197'
-  },
-  {
-    key: 'N2002',
-    authors: 'K. Nishitani',
-    meta: '“Phase Field法,” lecture notes, 2002. Public source lookup link; local copy is not distributed.',
-    url: 'https://www.google.com/search?q=K.+Nishitani+Phase+Field%E6%B3%95+2002'
   }
 ];
 
