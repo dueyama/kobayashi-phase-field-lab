@@ -22,6 +22,7 @@ export class PhaseFieldApp {
   private page: Page = 'lab';
   private lastFrame = performance.now();
   private fps = 0;
+  private animationFrameId: number | null = null;
   private unstable = false;
   private viewRoot: HTMLElement | null = null;
   private resizeObserver: ResizeObserver | null = null;
@@ -40,24 +41,51 @@ export class PhaseFieldApp {
     this.bindTopNav();
     this.showLab();
     window.addEventListener('resize', () => this.renderer?.resize());
-    requestAnimationFrame((time) => this.tick(time));
   }
 
   private tick(time: number): void {
+    this.animationFrameId = null;
+    if (!this.running || this.page !== 'lab') return;
+
     const delta = Math.max(1, time - this.lastFrame);
     this.fps = this.fps * 0.88 + (1000 / delta) * 0.12;
     this.lastFrame = time;
 
-    if (this.page === 'lab') {
-      if (this.running && !this.unstable) {
-        const stats = this.solver.step(this.config.stepsPerFrame);
-        this.unstable = stats.unstable;
-      }
-      const snapshot = this.solver.snapshot();
-      this.renderer?.render(snapshot, this.config);
+    if (!this.unstable) {
+      const stats = this.solver.step(this.config.stepsPerFrame);
+      this.unstable = stats.unstable;
+    }
+
+    const snapshot = this.solver.snapshot();
+    this.renderer?.render(snapshot, this.config);
+    this.updateTelemetry(snapshot);
+
+    if (this.running && !this.unstable) {
+      this.animationFrameId = requestAnimationFrame((next) => this.tick(next));
+    } else {
+      this.running = false;
+      this.updateRunButton();
       this.updateTelemetry(snapshot);
     }
-    requestAnimationFrame((next) => this.tick(next));
+  }
+
+  private startLoop(): void {
+    if (this.animationFrameId !== null) return;
+    this.fps = 0;
+    this.lastFrame = performance.now();
+    this.animationFrameId = requestAnimationFrame((time) => this.tick(time));
+  }
+
+  private stopLoop(): void {
+    if (this.animationFrameId === null) return;
+    cancelAnimationFrame(this.animationFrameId);
+    this.animationFrameId = null;
+  }
+
+  private renderCurrentState(force = true): void {
+    const snapshot = this.solver.snapshot();
+    this.renderer?.render(snapshot, this.config, force);
+    this.updateTelemetry(snapshot);
   }
 
   private bindTopNav(): void {
@@ -71,6 +99,10 @@ export class PhaseFieldApp {
 
   private setPage(page: Page): void {
     if (page === this.page) return;
+    if (page !== 'lab') {
+      this.running = false;
+      this.stopLoop();
+    }
     this.page = page;
     this.root.querySelectorAll<HTMLButtonElement>('.nav-tab').forEach((button) => {
       button.setAttribute('aria-selected', String(button.dataset.page === page));
@@ -98,7 +130,8 @@ export class PhaseFieldApp {
     this.resizeObserver = new ResizeObserver(() => this.renderer?.resize());
     this.resizeObserver.observe(viewport);
     this.bindLabControls();
-    this.renderer.render(this.solver.snapshot(), this.config, true);
+    this.renderCurrentState(true);
+    if (this.running) this.startLoop();
   }
 
   private showModel(): void {
@@ -144,6 +177,7 @@ export class PhaseFieldApp {
     if (!presets.some((preset) => preset.id === presetId)) return;
     this.config = clonePreset(presetId);
     this.running = false;
+    this.stopLoop();
     this.recreateSolver(true);
     if (this.page === 'lab') {
       this.showLab();
@@ -231,6 +265,8 @@ export class PhaseFieldApp {
     root.querySelector<HTMLSelectElement>('[data-field="preset"]')?.addEventListener('change', (event) => {
       const id = (event.currentTarget as HTMLSelectElement).value;
       this.config = clonePreset(id);
+      this.running = false;
+      this.stopLoop();
       this.recreateSolver(true);
       this.showLab();
     });
@@ -240,6 +276,8 @@ export class PhaseFieldApp {
         const dimension = button.dataset.dimension as Dimension;
         const preset = labPresets.find((item) => item.dimension === dimension) ?? labPresets[0] ?? presets[0];
         this.config = clonePreset(preset.id);
+        this.running = false;
+        this.stopLoop();
         this.recreateSolver(true);
         this.showLab();
       });
@@ -247,16 +285,17 @@ export class PhaseFieldApp {
 
     root.querySelector<HTMLButtonElement>('[data-action="run"]')?.addEventListener('click', () => {
       this.running = !this.running;
+      if (!this.running) this.stopLoop();
       this.showLab();
+      if (this.running) this.startLoop();
     });
     root.querySelector<HTMLButtonElement>('[data-action="step"]')?.addEventListener('click', () => {
       this.solver.step(1);
-      this.renderer?.render(this.solver.snapshot(), this.config, true);
+      this.renderCurrentState(true);
     });
     root.querySelector<HTMLButtonElement>('[data-action="reset"]')?.addEventListener('click', () => {
       this.recreateSolver(true);
-      this.renderer?.render(this.solver.snapshot(), this.config, true);
-      this.updateTelemetry(this.solver.snapshot());
+      this.renderCurrentState(true);
     });
     root.querySelector<HTMLButtonElement>('[data-action="random-seed"]')?.addEventListener('click', () => {
       this.config.seed = Math.floor(1 + Math.random() * 999999);
@@ -288,11 +327,11 @@ export class PhaseFieldApp {
     });
     bindSelect(root, 'viewMode', (value) => {
       this.config.viewMode = value as ViewMode;
-      this.renderer?.render(this.solver.snapshot(), this.config, true);
+      this.renderCurrentState(true);
     });
     bindSelect(root, 'renderMode3D', (value) => {
       this.config.renderMode3D = value as RenderMode3D;
-      this.renderer?.render(this.solver.snapshot(), this.config, true);
+      this.renderCurrentState(true);
     });
     bindSelect(root, 'boundaryCondition', (value) => {
       this.config.boundaryCondition = value as BoundaryCondition;
@@ -343,7 +382,7 @@ export class PhaseFieldApp {
     };
     set('step', snapshot.step.toLocaleString());
     set('time', snapshot.time.toFixed(2));
-    set('fps', this.fps.toFixed(0));
+    set('fps', this.running ? this.fps.toFixed(0) : 'Idle');
     set(
       'grid',
       snapshot.dimension === '2d'
@@ -356,6 +395,11 @@ export class PhaseFieldApp {
     set('temp', `${snapshot.minTemperature.toFixed(2)} / ${snapshot.maxTemperature.toFixed(2)}`);
     const warning = this.viewRoot?.querySelector<HTMLElement>('[data-warning]');
     warning?.classList.toggle('visible', this.unstable);
+  }
+
+  private updateRunButton(): void {
+    const button = this.viewRoot?.querySelector<HTMLButtonElement>('[data-action="run"]');
+    if (button) button.textContent = this.running ? 'Pause' : 'Run';
   }
 
   private syncRangeLabel(field: string, value: string): void {
