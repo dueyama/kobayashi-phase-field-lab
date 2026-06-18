@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.env
+
+private/
+.DS_Store
+AGENTS.md
+docs/
+capture.html
+src/capture.ts
