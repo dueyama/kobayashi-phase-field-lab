@@ -11,11 +11,11 @@ type Page = 'lab' | 'reproduction' | 'model' | 'references';
 
 const APP_LINKS = {
   github: 'https://github.com/dueyama/kobayashi-phase-field-lab',
-  liveSite: ''
+  liveSite: 'https://kobayashi-phase-field-lab.vercel.app'
 };
 
 export class PhaseFieldApp {
-  private config: PhaseFieldConfig = clonePreset('paper-fig7-delta010');
+  private config: PhaseFieldConfig = clonePreset('paper-fig8-k200-sixfold');
   private solver: Solver = new PhaseField2D(this.config);
   private renderer: SceneRenderer | null = null;
   private running = false;

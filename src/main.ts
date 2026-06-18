@@ -1,4 +1,5 @@
 import './styles.css';
+import { inject } from '@vercel/analytics';
 import { PhaseFieldApp } from './app/App';
 
 const root = document.querySelector<HTMLDivElement>('#app');
@@ -9,3 +10,4 @@ if (!root) {
 
 const app = new PhaseFieldApp(root);
 app.start();
+inject();

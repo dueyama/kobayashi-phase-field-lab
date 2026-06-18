@@ -2,6 +2,8 @@
 
 A Vite + TypeScript + three.js browser implementation of Ryo Kobayashi's phase-field dendrite model, with qualitative 2D and 3D reproduction experiments.
 
+Live app: [kobayashi-phase-field-lab.vercel.app](https://kobayashi-phase-field-lab.vercel.app)
+
 ## Features
 
 - 2D phase-field simulation with paper notation `p(x,y,t)` and temperature field `T(x,y,t)`.
