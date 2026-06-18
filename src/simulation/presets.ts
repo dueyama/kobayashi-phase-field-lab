@@ -722,6 +722,9 @@ export const presets: PhaseFieldConfig[] = [
     temperatureSolverIterations: 8,
     temperatureSolverTolerance: 1e-5,
     renderMode3D: 'surface',
+    surfaceStyle3D: 'gold',
+    presentationView3D: 'z-right',
+    interactiveView3D: true,
     description:
       'K2002 Fig.9 right estimated target: x/y symmetry quarter-domain with a smooth r=7 half-cell corner nucleus, mirrored for full-domain interpretation.',
     paperReference: paperReference('K2002 Fig.9 right estimated 3D target', [
