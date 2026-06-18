@@ -464,7 +464,7 @@ button {
   color: var(--cyan-2);
   font-size: 10px;
   font-weight: 800;
-  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
 .control-value {
@@ -629,15 +629,20 @@ input[type="range"] {
 }
 
 .math-inline {
-  display: inline-flex;
+  display: inline-block;
   max-width: 100%;
   vertical-align: -0.18em;
+  white-space: nowrap;
 }
 
 .math-inline math,
 .math-block math {
   color: #e5fbff;
   font-family: "STIX Two Math", "Cambria Math", "Times New Roman", serif;
+}
+
+.math-inline math {
+  white-space: nowrap;
 }
 
 .math-inline math {

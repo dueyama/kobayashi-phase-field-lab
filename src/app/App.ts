@@ -216,7 +216,7 @@ export class PhaseFieldApp {
   private reproductionStateStatus(snapshot: SimulationSnapshot, config: PhaseFieldConfig): string {
     const mode =
       config.renderMode3D === 'surface'
-        ? 'phi=0.5 isosurface'
+        ? 'p=0.5 isosurface'
         : config.renderMode3D === 'volume'
           ? 'Data3DTexture ray-marched volume'
           : 'orthogonal slices';
@@ -465,7 +465,7 @@ function labTemplate(config: PhaseFieldConfig, running: boolean): string {
           ${telemetryItem('Time', 'time')}
           ${telemetryItem('FPS', 'fps')}
           ${telemetryItem('Mesh', 'grid')}
-          ${telemetryItem('Phi min / max', 'phi')}
+          ${telemetryItem('p min / max', 'phi')}
           ${telemetryItem('T min / max', 'temp')}
         </div>
       </section>
@@ -498,7 +498,7 @@ function labTemplate(config: PhaseFieldConfig, running: boolean): string {
           </section>
 
           <section class="control-section">
-            <div class="section-title"><span>Numerics</span><span>Explicit phi / implicit T</span></div>
+            <div class="section-title"><span>Numerics</span><span>Explicit p / implicit T</span></div>
             <div class="section-body">
               ${numberControl('Steps / frame', 'stepsPerFrame', config.stepsPerFrame, 1, 24)}
               ${gridSizeControl(config.dimension, gridOptions, config.nx, config.ny, config.nz)}
@@ -573,17 +573,104 @@ function presetNote(config: PhaseFieldConfig): string {
   ];
   return `
     <div class="preset-note">
-      ${config.description ? `<p>${config.description}</p>` : ''}
+      ${config.description ? `<p>${renderPresetDetail(config.description)}</p>` : ''}
       <div class="preset-paper-label">Simulation geometry</div>
-      <ul>${geometryDetails.map((detail) => `<li>${detail}</li>`).join('')}</ul>
+      <ul>${geometryDetails.map((detail) => `<li>${renderPresetDetail(detail)}</li>`).join('')}</ul>
       ${
         config.paperReference
-          ? `<div class="preset-paper-label">${config.paperReference.label}</div>
-             <ul>${paperDetails.map((detail) => `<li>${detail}</li>`).join('')}</ul>`
+          ? `<div class="preset-paper-label">${presetReferenceLabel(config.paperReference.label)}</div>
+             <ul>${paperDetails.map((detail) => `<li>${renderPresetDetail(detail)}</li>`).join('')}</ul>`
           : ''
       }
     </div>
   `;
+}
+
+function presetReferenceLabel(label: string): string {
+  return escapeHtml(label.replace(/^Kobayashi\s+1993/i, 'K1993'));
+}
+
+function renderPresetDetail(detail: string): string {
+  const formulas: string[] = [];
+  let text = detail;
+  const stash = (html: string): string => {
+    const token = `@@MATH_${formulas.length}@@`;
+    formulas.push(html);
+    return token;
+  };
+
+  text = text.replace(/\bdx\s*=\s*dy\s*=\s*dz\s*=\s*(-?\d+(?:\.\d+)?)/gi, (_match, value: string) =>
+    stash(
+      mathInline(
+        `<mrow><mi mathvariant="normal">Δx</mi><mo>=</mo><mi mathvariant="normal">Δy</mi><mo>=</mo><mi mathvariant="normal">Δz</mi><mo>=</mo>${mathValueMarkup(value)}</mrow>`,
+        'uniform grid spacing'
+      )
+    )
+  );
+
+  text = text.replace(/\b(?:phi|p)\s*\(\s*1\s*-\s*(?:phi|p)\s*\)\s*X\b/gi, () =>
+    stash(
+      mathInline(
+        '<mrow><mi>p</mi><mo stretchy="false">(</mo><mn>1</mn><mo>-</mo><mi>p</mi><mo stretchy="false">)</mo><mi>X</mi></mrow>',
+        'p times one minus p times X'
+      )
+    )
+  );
+
+  text = text.replace(
+    /\b(epsilon_bar|theta0|delta|tau|alpha|gamma|dx|dy|dz|dt|K|a|r|j|t|phi|p)\s*(~=|>=|<=|=)\s*(-?\d+(?:\.\d+)?|pi\/2|pi)\b/gi,
+    (_match, variable: string, operator: string, value: string) =>
+      stash(
+        mathInline(
+          `<mrow>${mathVariableMarkup(variable)}${mathOperatorMarkup(operator)}${mathValueMarkup(value)}</mrow>`,
+          `${variable} ${operator} ${value}`
+        )
+      )
+  );
+
+  text = text.replace(/\bphi\b/gi, () => stash(mathInline('<mi>p</mi>', 'p')));
+
+  return escapeHtml(text).replace(/@@MATH_(\d+)@@/g, (_match, index: string) => formulas[Number(index)] ?? '');
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function mathVariableMarkup(variable: string): string {
+  const normalized = variable.toLowerCase();
+  if (normalized === 'epsilon_bar') return '<mover><mi>ε</mi><mo>¯</mo></mover>';
+  if (normalized === 'theta0') return '<msub><mi>θ</mi><mn>0</mn></msub>';
+  if (normalized === 'delta') return '<mi>δ</mi>';
+  if (normalized === 'tau') return '<mi>τ</mi>';
+  if (normalized === 'alpha') return '<mi>α</mi>';
+  if (normalized === 'gamma') return '<mi>γ</mi>';
+  if (normalized === 'phi') return '<mi>p</mi>';
+  if (normalized === 'p') return '<mi>p</mi>';
+  if (normalized === 'dx') return '<mi mathvariant="normal">Δx</mi>';
+  if (normalized === 'dy') return '<mi mathvariant="normal">Δy</mi>';
+  if (normalized === 'dz') return '<mi mathvariant="normal">Δz</mi>';
+  if (normalized === 'dt') return '<mi mathvariant="normal">Δt</mi>';
+  return `<mi>${escapeHtml(variable)}</mi>`;
+}
+
+function mathOperatorMarkup(operator: string): string {
+  if (operator === '~=') return '<mo>≈</mo>';
+  if (operator === '>=') return '<mo>≥</mo>';
+  if (operator === '<=') return '<mo>≤</mo>';
+  return '<mo>=</mo>';
+}
+
+function mathValueMarkup(value: string): string {
+  const normalized = value.toLowerCase();
+  if (normalized === 'pi') return '<mi>π</mi>';
+  if (normalized === 'pi/2') return '<mfrac><mi>π</mi><mn>2</mn></mfrac>';
+  return `<mn>${escapeHtml(value)}</mn>`;
 }
 
 function comparisonPanel(config: PhaseFieldConfig): string {
@@ -1013,28 +1100,28 @@ function threeDModelNotes(): string {
         <section class="method-grid" aria-label="3D solver method">
           <div class="method-card">
             <h2>State And Grid</h2>
-            <p>${mathInline('<mrow><mi>φ</mi><mo stretchy="false">(</mo><mi>x</mi><mo>,</mo><mi>y</mi><mo>,</mo><mi>z</mi><mo stretchy="false">)</mo></mrow>', 'phi as a function of x y z')} and ${mathInline('<mrow><mi>T</mi><mo stretchy="false">(</mo><mi>x</mi><mo>,</mo><mi>y</mi><mo>,</mo><mi>z</mi><mo stretchy="false">)</mo></mrow>', 'temperature as a function of x y z')} are stored as flat <code>Float32Array</code> fields. The solver assumes ${mathInline('<mrow><mi>Δ</mi><mi>x</mi><mo>=</mo><mi>Δ</mi><mi>y</mi><mo>=</mo><mi>Δ</mi><mi>z</mi></mrow>', 'uniform grid spacing')}. K2002 right-type runs use a quarter domain with Neumann symmetry planes in <code>x</code> and <code>y</code>, then mirror the data only for display. K2002 Fig.9-left is a full-domain run with a bottom-face-centered nucleus and no x-y mirror.</p>
+            <p>${mathInline('<mrow><mi>p</mi><mo stretchy="false">(</mo><mi>x</mi><mo>,</mo><mi>y</mi><mo>,</mo><mi>z</mi><mo stretchy="false">)</mo></mrow>', 'p as a function of x y z')} and ${mathInline('<mrow><mi>T</mi><mo stretchy="false">(</mo><mi>x</mi><mo>,</mo><mi>y</mi><mo>,</mo><mi>z</mi><mo stretchy="false">)</mo></mrow>', 'temperature as a function of x y z')} are stored as flat <code>Float32Array</code> fields. The solver assumes ${mathInline('<mrow><mi mathvariant="normal">Δx</mi><mo>=</mo><mi mathvariant="normal">Δy</mi><mo>=</mo><mi mathvariant="normal">Δz</mi></mrow>', 'uniform grid spacing')}. K2002 right-type runs use a quarter domain with Neumann symmetry planes in <code>x</code> and <code>y</code>, then mirror the data only for display. K2002 Fig.9-left is a full-domain run with a bottom-face-centered nucleus and no x-y mirror.</p>
           </div>
           <div class="method-card">
             <h2>Phase Step</h2>
             ${explicitPhaseStepMath()}
-            <p>${mathInline('<mi>φ</mi>', 'phi')} is advanced explicitly from anisotropic flux divergence, reaction, and deterministic interface-localized noise. This keeps the browser solver simple but makes high ${mathInline('<mrow><mi>Δ</mi><mi>t</mi></mrow>', 'time step')}, strong anisotropy, and large 3D grids stability-sensitive.</p>
+            <p>${mathInline('<mi>p</mi>', 'p')} is advanced explicitly from anisotropic flux divergence, reaction, and deterministic interface-localized noise. This keeps the browser solver simple but makes high ${mathInline('<mrow><mi mathvariant="normal">Δt</mi></mrow>', 'time step')}, strong anisotropy, and large 3D grids stability-sensitive.</p>
           </div>
           <div class="method-card">
             <h2>Temperature Step</h2>
             ${mathBlock(implicitTemperatureMathMarkup(), 'implicit temperature update equation')}
-            <p>Neumann cases use the memory-saving ICCG solver; fixed-temperature boundaries fall back to Jacobi iteration. The latent heat increment ${mathInline('<mrow><mi>K</mi><mi>Δ</mi><mi>φ</mi></mrow>', 'K delta phi')} is coupled to the temperature update without making ${mathInline('<mi>φ</mi>', 'phi')} itself implicit.</p>
+            <p>Neumann cases use the memory-saving ICCG solver; fixed-temperature boundaries fall back to Jacobi iteration. The latent heat increment ${mathInline('<mrow><mi>K</mi><mi>Δ</mi><mi>p</mi></mrow>', 'K delta p')} is coupled to the temperature update without making ${mathInline('<mi>p</mi>', 'p')} itself implicit.</p>
           </div>
           <div class="method-card">
             <h2>3D Anisotropy</h2>
-            <p>The four-fold 3D paper target uses the vector form from K2002 ${cite('K2002')}, with ${mathInline('<mrow><mi>v</mi><mo>=</mo><mo>-</mo><mo>∇</mo><mi>φ</mi></mrow>', 'v equals minus gradient phi')}.</p>
+            <p>The four-fold 3D paper target uses the vector form from K2002 ${cite('K2002')}, with ${mathInline('<mrow><mi>v</mi><mo>=</mo><mo>-</mo><mo>∇</mo><mi>p</mi></mrow>', 'v equals minus gradient p')}.</p>
             ${sigma3DMath()}
             ${anisotropicFlux3DMath()}
             <p>Fluxes include the derivative of ${mathInline('<mi>σ</mi>', 'sigma')} with respect to ${mathInline('<mi>v</mi>', 'v')}, so coordinate-axis directions become preferred growth directions.</p>
           </div>
           <div class="method-card">
             <h2>Rendering</h2>
-            <p><code>Isosurface</code> renders the interpolated ${mathInline('<mrow><mi>φ</mi><mo>=</mo><mn>0.5</mn></mrow>', 'phi equals zero point five')} surface as a three.js <code>BufferGeometry</code>. <code>Slices</code> shows three scalar planes. <code>Volume</code> uploads ${mathInline('<mi>φ</mi>', 'phi')} as a three.js <code>Data3DTexture</code> and ray-marches it in a WebGL2 GLSL fragment shader. The K2002 Fig.9-left presentation view uses the same WebGL isosurface renderer with a blue background, gold material, and simulation <code>z</code> nearly vertical.</p>
+            <p><code>Isosurface</code> renders the interpolated ${mathInline('<mrow><mi>p</mi><mo>=</mo><mn>0.5</mn></mrow>', 'p equals zero point five')} surface as a three.js <code>BufferGeometry</code>. <code>Slices</code> shows three scalar planes. <code>Volume</code> uploads ${mathInline('<mi>p</mi>', 'p')} as a three.js <code>Data3DTexture</code> and ray-marches it in a WebGL2 GLSL fragment shader. The K2002 Fig.9-left presentation view uses the same WebGL isosurface renderer with a blue background, gold material, and simulation <code>z</code> nearly vertical.</p>
           </div>
           <div class="method-card">
             <h2>Outputs</h2>
@@ -1049,7 +1136,7 @@ function threeDModelNotes(): string {
           </div>
           <div class="method-card">
             <h2>Public Assets</h2>
-            <p>Published 3D assets are generated outputs: MP4 animations, poster PNGs, public final-state field files for the interactive viewer, and downloadable <code>φ=0.5</code> STL isosurfaces. The STL files are generated from the same public <code>.pfstate</code> final states rather than from paper figures.</p>
+            <p>Published 3D assets are generated outputs: MP4 animations, poster PNGs, public final-state field files for the interactive viewer, and downloadable <code>p=0.5</code> STL isosurfaces. The STL files are generated from the same public <code>.pfstate</code> final states rather than from paper figures.</p>
           </div>
           <div class="method-card">
             <h2>Exploration Policy</h2>
@@ -1070,7 +1157,7 @@ function threeDPresetRows(config: PhaseFieldConfig): Array<{ label: string; valu
     { label: 'mesh', value: meshLabel(config) },
     { label: 'domain', value: domainSizeLabel(config) },
     { label: 'dx / dt', value: `${compactNumber(config.dx)} / ${compactNumber(config.dt)}` },
-    { label: 'solver', value: `${config.temperatureSolver ?? 'iccg'} T, explicit phi` },
+    { label: 'solver', value: `${config.temperatureSolver ?? 'iccg'} T, explicit p` },
     { label: 'K / tau', value: `${compactNumber(config.latentHeat)} / ${compactNumber(config.tau)}` },
     { label: 'anisotropy', value: anisotropyLabel(config) },
     { label: 'noise', value: `a=${compactNumber(config.noiseAmplitude)}, seed=${config.seed}` },
@@ -1143,7 +1230,7 @@ function angleLabel(value: number): string {
 
 function compactNumber(value: number): string {
   if (Object.is(value, -0) || Math.abs(value) < 1e-12) return '0';
-  if (Math.abs(value) < 0.001) return value.toExponential(1);
+  if (Math.abs(value) < 0.001) return value.toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
   if (Math.abs(value) < 0.01) return value.toFixed(4).replace(/0+$/, '').replace(/\.$/, '');
   if (Math.abs(value) < 1) return value.toFixed(3).replace(/0+$/, '').replace(/\.$/, '');
   return value.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
@@ -1205,12 +1292,12 @@ function mathBlock(markup: string, label: string): string {
 function phaseEquationMath(): string {
   return mathBlock(
     `<mrow>
-      <mi>τ</mi><mfrac><mrow><mo>∂</mo><mi>φ</mi></mrow><mrow><mo>∂</mo><mi>t</mi></mrow></mfrac>
+      <mi>τ</mi><mfrac><mrow><mo>∂</mo><mi>p</mi></mrow><mrow><mo>∂</mo><mi>t</mi></mrow></mfrac>
       <mo>=</mo>
-      <mo>∇</mo><mo>·</mo><mi>F</mi><mo stretchy="false">(</mo><mi>φ</mi><mo stretchy="false">)</mo>
+      <mo>∇</mo><mo>·</mo><mi>F</mi><mo stretchy="false">(</mo><mi>p</mi><mo stretchy="false">)</mo>
       <mo>+</mo>
-      <mi>φ</mi><mo stretchy="false">(</mo><mn>1</mn><mo>-</mo><mi>φ</mi><mo stretchy="false">)</mo>
-      <mo stretchy="false">(</mo><mi>φ</mi><mo>-</mo><mfrac><mn>1</mn><mn>2</mn></mfrac><mo>+</mo><mi>m</mi><mo stretchy="false">(</mo><mi>T</mi><mo stretchy="false">)</mo><mo stretchy="false">)</mo>
+      <mi>p</mi><mo stretchy="false">(</mo><mn>1</mn><mo>-</mo><mi>p</mi><mo stretchy="false">)</mo>
+      <mo stretchy="false">(</mo><mi>p</mi><mo>-</mo><mfrac><mn>1</mn><mn>2</mn></mfrac><mo>+</mo><mi>m</mi><mo stretchy="false">(</mo><mi>T</mi><mo stretchy="false">)</mo><mo stretchy="false">)</mo>
       <mo>+</mo><mi>η</mi>
     </mrow>`,
     'phase-field evolution equation'
@@ -1224,7 +1311,7 @@ function temperatureEquationMath(): string {
       <mo>=</mo>
       <msub><mi>D</mi><mi>T</mi></msub><msup><mo>∇</mo><mn>2</mn></msup><mi>T</mi>
       <mo>+</mo>
-      <mi>K</mi><mfrac><mrow><mo>∂</mo><mi>φ</mi></mrow><mrow><mo>∂</mo><mi>t</mi></mrow></mfrac>
+      <mi>K</mi><mfrac><mrow><mo>∂</mo><mi>p</mi></mrow><mrow><mo>∂</mo><mi>t</mi></mrow></mfrac>
     </mrow>`,
     'temperature evolution equation'
   );
@@ -1258,12 +1345,12 @@ function epsilon2DMath(): string {
 function implicitTemperatureMathMarkup(): string {
   return (
     `<mrow>
-      <mo stretchy="false">(</mo><mi>I</mi><mo>-</mo><mi>Δ</mi><mi>t</mi><msub><mi>D</mi><mi>T</mi></msub><msup><mo>∇</mo><mn>2</mn></msup><mo stretchy="false">)</mo>
+      <mo stretchy="false">(</mo><mi>I</mi><mo>-</mo><mi mathvariant="normal">Δt</mi><msub><mi>D</mi><mi>T</mi></msub><msup><mo>∇</mo><mn>2</mn></msup><mo stretchy="false">)</mo>
       <msup><mi>T</mi><mrow><mi>n</mi><mo>+</mo><mn>1</mn></mrow></msup>
       <mo>=</mo>
       <msup><mi>T</mi><mi>n</mi></msup>
       <mo>+</mo>
-      <mi>K</mi><mo stretchy="false">(</mo><msup><mi>φ</mi><mrow><mi>n</mi><mo>+</mo><mn>1</mn></mrow></msup><mo>-</mo><msup><mi>φ</mi><mi>n</mi></msup><mo stretchy="false">)</mo>
+      <mi>K</mi><mo stretchy="false">(</mo><msup><mi>p</mi><mrow><mi>n</mi><mo>+</mo><mn>1</mn></mrow></msup><mo>-</mo><msup><mi>p</mi><mi>n</mi></msup><mo stretchy="false">)</mo>
     </mrow>`
   );
 }
@@ -1275,16 +1362,16 @@ function implicitTemperatureMath(): string {
 function explicitPhaseStepMath(): string {
   return mathBlock(
     `<mrow>
-      <msup><mi>φ</mi><mrow><mi>n</mi><mo>+</mo><mn>1</mn></mrow></msup>
+      <msup><mi>p</mi><mrow><mi>n</mi><mo>+</mo><mn>1</mn></mrow></msup>
       <mo>=</mo>
-      <msup><mi>φ</mi><mi>n</mi></msup>
+      <msup><mi>p</mi><mi>n</mi></msup>
       <mo>+</mo>
-      <mfrac><mrow><mi>Δ</mi><mi>t</mi></mrow><mi>τ</mi></mfrac>
+      <mfrac><mrow><mi mathvariant="normal">Δt</mi></mrow><mi>τ</mi></mfrac>
       <mo stretchy="false">[</mo>
       <mo>∇</mo><mo>·</mo><mi>F</mi>
       <mo>+</mo>
-      <mi>φ</mi><mo stretchy="false">(</mo><mn>1</mn><mo>-</mo><mi>φ</mi><mo stretchy="false">)</mo>
-      <mo stretchy="false">(</mo><mi>φ</mi><mo>-</mo><mfrac><mn>1</mn><mn>2</mn></mfrac><mo>+</mo><mi>m</mi><mo stretchy="false">(</mo><mi>T</mi><mo stretchy="false">)</mo><mo stretchy="false">)</mo>
+      <mi>p</mi><mo stretchy="false">(</mo><mn>1</mn><mo>-</mo><mi>p</mi><mo stretchy="false">)</mo>
+      <mo stretchy="false">(</mo><mi>p</mi><mo>-</mo><mfrac><mn>1</mn><mn>2</mn></mfrac><mo>+</mo><mi>m</mi><mo stretchy="false">(</mo><mi>T</mi><mo stretchy="false">)</mo><mo stretchy="false">)</mo>
       <mo>+</mo><mi>η</mi>
       <mo stretchy="false">]</mo>
     </mrow>`,
@@ -1314,9 +1401,9 @@ function anisotropicFlux3DMath(): string {
     `<mrow>
       <msub><mi>F</mi><mi>i</mi></msub>
       <mo>=</mo>
-      <msup><mi>ε</mi><mn>2</mn></msup><msub><mi>φ</mi><mi>i</mi></msub>
+      <msup><mi>ε</mi><mn>2</mn></msup><msub><mi>p</mi><mi>i</mi></msub>
       <mo>-</mo>
-      <msup><mrow><mo>|</mo><mo>∇</mo><mi>φ</mi><mo>|</mo></mrow><mn>2</mn></msup>
+      <msup><mrow><mo>|</mo><mo>∇</mo><mi>p</mi><mo>|</mo></mrow><mn>2</mn></msup>
       <mi>ε</mi>
       <mfrac><mrow><mo>∂</mo><mi>ε</mi></mrow><mrow><mo>∂</mo><msub><mi>v</mi><mi>i</mi></msub></mrow></mfrac>
     </mrow>`,
@@ -1327,7 +1414,7 @@ function anisotropicFlux3DMath(): string {
 function initialConditionMath(): string {
   return mathBlock(
     `<mrow>
-      <msub><mi>φ</mi><mn>0</mn></msub>
+      <msub><mi>p</mi><mn>0</mn></msub>
       <mo stretchy="false">(</mo><mi>r</mi><mo stretchy="false">)</mo>
       <mo>=</mo>
       <mfrac><mn>1</mn><mn>2</mn></mfrac>
@@ -1358,38 +1445,38 @@ function modelTemplate(): string {
         <h1>Model & Method</h1>
         <p>This simulator is a qualitative browser implementation of Ryo Kobayashi's phase-field dendrite model ${cite('K1993')} ${cite('K2002')}. It is intended for exploring how anisotropy, latent heat, thermal diffusion, and interface noise shape dendritic growth. It is not a calibrated production materials-science solver.</p>
         <h2>Fields</h2>
-        <p>${mathInline('<mi>φ</mi>', 'phi')} is the phase field. The app uses ${mathInline('<mrow><mi>φ</mi><mo>=</mo><mn>0</mn></mrow>', 'phi equals zero')} for liquid, ${mathInline('<mrow><mi>φ</mi><mo>=</mo><mn>1</mn></mrow>', 'phi equals one')} for solid, and renders the solid-liquid interface near ${mathInline('<mrow><mi>φ</mi><mo>=</mo><mn>0.5</mn></mrow>', 'phi equals zero point five')}. Because the interface is represented as a continuous field on a grid, the solver can handle tip splitting and side branching without explicitly tracking a moving curve or surface.</p>
-        <p>${mathInline('<mi>T</mi>', 'temperature')} is the temperature / undercooling-related field. When solidification advances, latent heat proportional to ${mathInline('<mfrac><mrow><mo>∂</mo><mi>φ</mi></mrow><mrow><mo>∂</mo><mi>t</mi></mrow></mfrac>', 'partial phi over partial time')} is added back into ${mathInline('<mi>T</mi>', 'temperature')}, and the changed thermal field then feeds back into later interface growth.</p>
+        <p>${mathInline('<mi>p</mi>', 'p')} is the phase field. The app uses ${mathInline('<mrow><mi>p</mi><mo>=</mo><mn>0</mn></mrow>', 'p equals zero')} for liquid, ${mathInline('<mrow><mi>p</mi><mo>=</mo><mn>1</mn></mrow>', 'p equals one')} for solid, and renders the solid-liquid interface near ${mathInline('<mrow><mi>p</mi><mo>=</mo><mn>0.5</mn></mrow>', 'p equals zero point five')}. Because the interface is represented as a continuous field on a grid, the solver can handle tip splitting and side branching without explicitly tracking a moving curve or surface.</p>
+        <p>${mathInline('<mi>T</mi>', 'temperature')} is the temperature / undercooling-related field. When solidification advances, latent heat proportional to ${mathInline('<mfrac><mrow><mo>∂</mo><mi>p</mi></mrow><mrow><mo>∂</mo><mi>t</mi></mrow></mfrac>', 'partial p over partial time')} is added back into ${mathInline('<mi>T</mi>', 'temperature')}, and the changed thermal field then feeds back into later interface growth.</p>
         <h2>Qualitative equations</h2>
         <div class="equation-block">
           ${phaseEquationMath()}
           ${temperatureEquationMath()}
           ${driveEquationMath()}
           <dl class="phase-state-list">
-            <div><dt>${mathInline('<mrow><mi>φ</mi><mo>=</mo><mn>0</mn></mrow>', 'phi equals zero')}</dt><dd>liquid</dd></div>
-            <div><dt>${mathInline('<mrow><mi>φ</mi><mo>=</mo><mn>1</mn></mrow>', 'phi equals one')}</dt><dd>solid</dd></div>
-            <div><dt>${mathInline('<mrow><mi>φ</mi><mo>=</mo><mn>0.5</mn></mrow>', 'phi equals zero point five')}</dt><dd>rendered interface</dd></div>
+            <div><dt>${mathInline('<mrow><mi>p</mi><mo>=</mo><mn>0</mn></mrow>', 'p equals zero')}</dt><dd>liquid</dd></div>
+            <div><dt>${mathInline('<mrow><mi>p</mi><mo>=</mo><mn>1</mn></mrow>', 'p equals one')}</dt><dd>solid</dd></div>
+            <div><dt>${mathInline('<mrow><mi>p</mi><mo>=</mo><mn>0.5</mn></mrow>', 'p equals zero point five')}</dt><dd>rendered interface</dd></div>
           </dl>
         </div>
         <h2>Initial conditions</h2>
-        <p>The app initializes ${mathInline('<mi>φ</mi>', 'phi')} as a diffuse interface, not as a hard binary mask. This follows the phase-field convention used with the finite-difference model notes in K2002 ${cite('K2002')}: the solid core starts near ${mathInline('<mrow><mi>φ</mi><mo>=</mo><mn>1</mn></mrow>', 'phi equals one')}, the surrounding liquid starts near ${mathInline('<mrow><mi>φ</mi><mo>=</mo><mn>0</mn></mrow>', 'phi equals zero')}, and the transition crosses the visible interface at ${mathInline('<mrow><mi>φ</mi><mo>=</mo><mn>0.5</mn></mrow>', 'phi equals zero point five')}.</p>
+        <p>The app initializes ${mathInline('<mi>p</mi>', 'p')} as a diffuse interface, not as a hard binary mask. This follows the phase-field convention used with the finite-difference model notes in K2002 ${cite('K2002')}: the solid core starts near ${mathInline('<mrow><mi>p</mi><mo>=</mo><mn>1</mn></mrow>', 'p equals one')}, the surrounding liquid starts near ${mathInline('<mrow><mi>p</mi><mo>=</mo><mn>0</mn></mrow>', 'p equals zero')}, and the transition crosses the visible interface at ${mathInline('<mrow><mi>p</mi><mo>=</mo><mn>0.5</mn></mrow>', 'p equals zero point five')}.</p>
         ${initialConditionMath()}
         <p>Here ${mathInline('<mi>d</mi>', 'd')} is the geometry-dependent distance: radial distance from a circular or spherical nucleus, signed distance from a perturbed left-wall front, or distance to the nearest wall for the inward-growth wall preset. ${mathInline('<msub><mi>r</mi><mn>0</mn></msub>', 'r zero')} is the preset seed radius or wall/front thickness in mesh cells, and ${mathInline('<mi>w</mi>', 'w')} is the numerical diffuse-interface width in mesh cells.</p>
-        <p>The shorthand <code>r=7</code> therefore means an initial seed radius of seven mesh cells. Its physical radius is ${mathInline('<mrow><mi>r</mi><mo>×</mo><mi>Δ</mi><mi>x</mi></mrow>', 'r times delta x')}; with the paper-target spacing <code>dx=0.03</code>, <code>r=7</code> corresponds to <code>0.21</code> model length units. In 2D bottom-edge presets this is a smooth half-disk clipped by the bottom Neumann wall; in center presets it is a smooth disk; in 3D it is a smooth sphere before boundary symmetry is applied.</p>
+        <p>The shorthand <code>r=7</code> therefore means an initial seed radius of seven mesh cells. Its physical radius is ${mathInline('<mrow><mi>r</mi><mo>×</mo><mi mathvariant="normal">Δx</mi></mrow>', 'r times delta x')}; with the paper-target spacing <code>dx=0.03</code>, <code>r=7</code> corresponds to <code>0.21</code> model length units. In 2D bottom-edge presets this is a smooth half-disk clipped by the bottom Neumann wall; in center presets it is a smooth disk; in 3D it is a smooth sphere before boundary symmetry is applied.</p>
         <p>The seed radius is treated as an estimated reproduction parameter. In comparison runs, changing <code>r</code> noticeably changed early morphology, lower-wall gaps, and later side-branch density. The current K1993 dendrite-family presets and the K2002 Fig.9-right 3D estimate use the common <code>r=7</code> convention so that differences between figures mainly reflect <code>K</code>, anisotropy, noise, and geometry rather than an independently retuned initial seed.</p>
-        <p>For the K2002 Fig.9-right 3D estimate, the quarter-domain seed is that <code>r=7</code> smooth sphere centered half a cell outside the x, y, and z Neumann planes. The app mirrors only x and y for the full-domain display/STL, so the visible object represents the x-y symmetry expansion of this quarter-domain calculation. The initial temperature field is uniform at the preset value; fixed-temperature boundaries are imposed at the boundary, and latent heat enters later through ${mathInline('<mrow><mi>K</mi><mi>Δ</mi><mi>φ</mi></mrow>', 'K delta phi')} during time stepping rather than being inserted into the initial field.</p>
+        <p>For the K2002 Fig.9-right 3D estimate, the quarter-domain seed is that <code>r=7</code> smooth sphere centered half a cell outside the x, y, and z Neumann planes. The app mirrors only x and y for the full-domain display/STL, so the visible object represents the x-y symmetry expansion of this quarter-domain calculation. The initial temperature field is uniform at the preset value; fixed-temperature boundaries are imposed at the boundary, and latent heat enters later through ${mathInline('<mrow><mi>K</mi><mi>Δ</mi><mi>p</mi></mrow>', 'K delta p')} during time stepping rather than being inserted into the initial field.</p>
         <h2>Paper validation path</h2>
         <p>The validation path starts with the planar-front cases in K1993 before moving to dendrite cases ${cite('K1993')}. The Fig.3 preset uses a <code>9.0 x 9.0</code> domain with a <code>300 x 300</code> mesh and inward growth from cooled walls. The Fig.4 preset uses a <code>12.0 x 3.0</code> domain with a <code>400 x 100</code> mesh, a perturbed left-wall solid front, and a fixed-temperature left wall. Fig.5 then sweeps all nine isotropic <code>K=0.8</code> to <code>K=2.0</code> directional-solidification cases, and Fig.6 repeats the same series with <code>delta=0.050</code> four-fold anisotropy.</p>
         <p>The K2002 Fig.9-right 3D target is an estimated browser preset, not a reported exact parameter set: <code>K=3.5</code>, <code>delta=0.020</code>, <code>a=0.005</code>, <code>r=7</code>, <code>dx=0.03</code>, <code>dt=0.0002</code>, and a <code>50 x 50 x 200</code> quarter-domain mesh. The physical quarter-domain is <code>1.5 x 1.5 x 6.0</code>; mirrored visualization and STL export correspond to <code>100 x 100 x 200</code> and <code>3.0 x 3.0 x 6.0</code>.</p>
         <h2>Anisotropy and noise</h2>
         <p>In 2D, the app uses ${epsilon2DMath()} ${cite('K1993')}. The anisotropic diffusion term is discretized with the half-grid flux form described in K2002, building ${mathInline('<msub><mi>p</mi><mrow><mi>i</mi><mo>+</mo><mfrac><mn>1</mn><mn>2</mn></mfrac><mo>,</mo><mi>j</mi></mrow></msub>', 'p at i plus one half j')} and ${mathInline('<msub><mi>q</mi><mrow><mi>i</mi><mo>,</mo><mi>j</mi><mo>+</mo><mfrac><mn>1</mn><mn>2</mn></mfrac></mrow></msub>', 'q at i j plus one half')} before taking their divergence ${cite('K2002')}. With ${mathInline('<mrow><mi>j</mi><mo>=</mo><mn>4</mn></mrow>', 'j equals four')} and ${mathInline('<mrow><msub><mi>θ</mi><mn>0</mn></msub><mo>=</mo><mn>0</mn></mrow>', 'theta zero equals zero')}, the horizontal and vertical axes are preferred growth directions.</p>
-        <p>Paper-target K1993 presets use the reported values where available: ${mathInline('<mrow><mi>Δ</mi><mi>x</mi><mo>=</mo><mn>0.03</mn></mrow>', 'delta x equals zero point zero three')}, ${mathInline('<mrow><mi>Δ</mi><mi>t</mi><mo>=</mo><mn>0.0002</mn></mrow>', 'delta t equals zero point zero zero zero two')}, ${mathInline('<mrow><mover><mi>ε</mi><mo>¯</mo></mover><mo>=</mo><mn>0.01</mn></mrow>', 'epsilon bar equals zero point zero one')}, ${mathInline('<mrow><mi>τ</mi><mo>=</mo><mn>0.0003</mn></mrow>', 'tau equals zero point zero zero zero three')}, ${mathInline('<mrow><mi>α</mi><mo>=</mo><mn>0.9</mn></mrow>', 'alpha equals zero point nine')}, ${mathInline('<mrow><mi>γ</mi><mo>=</mo><mn>10.0</mn></mrow>', 'gamma equals ten')}, plus the figure-specific ${mathInline('<mi>δ</mi>', 'delta')}, ${mathInline('<mi>K</mi>', 'K')}, ${mathInline('<mi>j</mi>', 'j')}, and boundary setup ${cite('K1993')}. Bottom nuclei are initialized as smooth tanh-profile half-disks rather than hard binary disks. The 2D solver advances ${mathInline('<mi>φ</mi>', 'phi')} explicitly, then solves ${implicitTemperatureMath()} with ICCG for Neumann boundaries and Jacobi iteration for fixed-temperature boundaries.</p>
-        <p>Noise is applied on the ${mathInline('<mfrac><mrow><mo>∂</mo><mi>φ</mi></mrow><mrow><mo>∂</mo><mi>t</mi></mrow></mfrac>', 'partial phi over partial time')} side, corresponding to interface-velocity fluctuation ${cite('K1993')}. It is localized by ${mathInline('<mrow><mi>φ</mi><mo stretchy="false">(</mo><mn>1</mn><mo>-</mo><mi>φ</mi><mo stretchy="false">)</mo></mrow>', 'phi times one minus phi')}, so it acts near the diffuse interface rather than directly in the bulk liquid or bulk solid. Fig.7 uses the paper-default independent noise amplitude ${mathInline('<mrow><mi>a</mi><mo>=</mo><mn>0.010</mn></mrow>', 'a equals zero point zero one zero')}, while Fig.10 compares ${mathInline('<mrow><mi>a</mi><mo>=</mo><mn>0</mn></mrow>', 'a equals zero')}, ${mathInline('<mrow><mi>a</mi><mo>=</mo><mn>0.001</mn></mrow>', 'a equals zero point zero zero one')}, and ${mathInline('<mrow><mi>a</mi><mo>=</mo><mn>0.010</mn></mrow>', 'a equals zero point zero one zero')}.</p>
+        <p>Paper-target K1993 presets use the reported values where available: ${mathInline('<mrow><mi mathvariant="normal">Δx</mi><mo>=</mo><mn>0.03</mn></mrow>', 'delta x equals zero point zero three')}, ${mathInline('<mrow><mi mathvariant="normal">Δt</mi><mo>=</mo><mn>0.0002</mn></mrow>', 'delta t equals zero point zero zero zero two')}, ${mathInline('<mrow><mover><mi>ε</mi><mo>¯</mo></mover><mo>=</mo><mn>0.01</mn></mrow>', 'epsilon bar equals zero point zero one')}, ${mathInline('<mrow><mi>τ</mi><mo>=</mo><mn>0.0003</mn></mrow>', 'tau equals zero point zero zero zero three')}, ${mathInline('<mrow><mi>α</mi><mo>=</mo><mn>0.9</mn></mrow>', 'alpha equals zero point nine')}, ${mathInline('<mrow><mi>γ</mi><mo>=</mo><mn>10.0</mn></mrow>', 'gamma equals ten')}, plus the figure-specific ${mathInline('<mi>δ</mi>', 'delta')}, ${mathInline('<mi>K</mi>', 'K')}, ${mathInline('<mi>j</mi>', 'j')}, and boundary setup ${cite('K1993')}. Bottom nuclei are initialized as smooth tanh-profile half-disks rather than hard binary disks. The 2D solver advances ${mathInline('<mi>p</mi>', 'p')} explicitly, then solves ${implicitTemperatureMath()} with ICCG for Neumann boundaries and Jacobi iteration for fixed-temperature boundaries.</p>
+        <p>Noise is applied on the ${mathInline('<mfrac><mrow><mo>∂</mo><mi>p</mi></mrow><mrow><mo>∂</mo><mi>t</mi></mrow></mfrac>', 'partial p over partial time')} side, corresponding to interface-velocity fluctuation ${cite('K1993')}. It is localized by ${mathInline('<mrow><mi>p</mi><mo stretchy="false">(</mo><mn>1</mn><mo>-</mo><mi>p</mi><mo stretchy="false">)</mo></mrow>', 'p times one minus p')}, so it acts near the diffuse interface rather than directly in the bulk liquid or bulk solid. Fig.7 uses the paper-default independent noise amplitude ${mathInline('<mrow><mi>a</mi><mo>=</mo><mn>0.010</mn></mrow>', 'a equals zero point zero one zero')}, while Fig.10 compares ${mathInline('<mrow><mi>a</mi><mo>=</mo><mn>0</mn></mrow>', 'a equals zero')}, ${mathInline('<mrow><mi>a</mi><mo>=</mo><mn>0.001</mn></mrow>', 'a equals zero point zero zero one')}, and ${mathInline('<mrow><mi>a</mi><mo>=</mo><mn>0.010</mn></mrow>', 'a equals zero point zero one zero')}.</p>
         <h2>Boundary conditions</h2>
-        <p>${mathInline('<mi>φ</mi>', 'phi')} always uses no-flux / Neumann boundaries, following the zero-flux phase-field boundary described for K1993. ${mathInline('<mi>T</mi>', 'temperature')} can use adiabatic / no-flux, fixed-temperature edges, or a fixed-temperature left wall depending on the preset. Fig.7, Fig.8, Fig.9, and Fig.10 paper-target presets use the supercooled-melt adiabatic boundary setup.</p>
+        <p>${mathInline('<mi>p</mi>', 'p')} always uses no-flux / Neumann boundaries, following the zero-flux phase-field boundary described for K1993. ${mathInline('<mi>T</mi>', 'temperature')} can use adiabatic / no-flux, fixed-temperature edges, or a fixed-temperature left wall depending on the preset. Fig.7, Fig.8, Fig.9, and Fig.10 paper-target presets use the supercooled-melt adiabatic boundary setup.</p>
         ${threeDModelNotes()}
         <h2>Stability limits</h2>
-        <p>The temperature diffusion solve is implicit, but the phase equation is still explicit finite-difference stepping. Large ${mathInline('<mrow><mi>Δ</mi><mi>t</mi></mrow>', 'time step')}, strong anisotropy, high noise, or high-resolution 3D grids can destabilize the run. The app does not visually smooth over numerical instability; reduce the parameters if a run becomes unstable.</p>
+        <p>The temperature diffusion solve is implicit, but the phase equation is still explicit finite-difference stepping. Large ${mathInline('<mrow><mi mathvariant="normal">Δt</mi></mrow>', 'time step')}, strong anisotropy, high noise, or high-resolution 3D grids can destabilize the run. The app does not visually smooth over numerical instability; reduce the parameters if a run becomes unstable.</p>
       </div>
     </article>
   `;

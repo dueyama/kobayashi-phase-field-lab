@@ -22,10 +22,10 @@ const base: Omit<PhaseFieldConfig, 'id' | 'name' | 'dimension' | 'nx' | 'ny' | '
 };
 
 const kobayashiPaperDefaults = [
-  'Kobayashi 1993 fixed simulation values: square domain 9.0 x 9.0, mesh 300 x 300, dx = 0.03, dt = 0.0002.',
+  'K1993 fixed simulation values: square domain 9.0 x 9.0, mesh 300 x 300, dx = 0.03, dt = 0.0002.',
   'epsilon_bar = 0.01, tau = 0.0003, alpha = 0.9, gamma = 10.0.',
   'The browser uses smooth tanh-profile nuclei; bottom-edge dendrite targets may override the seed radius after paper comparison.',
-  'The 2D browser solver updates phi explicitly, then solves temperature diffusion implicitly with latent heat on the RHS.'
+  'The 2D browser solver updates p explicitly, then solves temperature diffusion implicitly with latent heat on the RHS.'
 ];
 
 type LocalComparisonKey =
@@ -81,7 +81,7 @@ const paperBase = {
 } satisfies Partial<PhaseFieldConfig>;
 
 const rectangularPaperDefaults = [
-  'Kobayashi 1993 rectangular directional solidification uses domain 12.0 x 3.0, mesh 400 x 100, dx = 0.03, dt = 0.0002.',
+  'K1993 rectangular directional solidification uses domain 12.0 x 3.0, mesh 400 x 100, dx = 0.03, dt = 0.0002.',
   'epsilon_bar = 0.01, tau = 0.0003, alpha = 0.9, gamma = 10.0, isotropic epsilon.',
   'The browser uses a smooth left-wall planar front; Fig.4 uses left-wall cooling, while Fig.5 uses adiabatic supercooled melt.'
 ];
@@ -142,7 +142,7 @@ function fig5Preset(spec: Fig5PresetSpec): PhaseFieldConfig {
     anisotropyAngle: 0,
     seed: spec.seed,
     description: spec.description,
-    paperReference: rectangularPaperReference(`Kobayashi 1993 Fig.5(${spec.figureIndex})`, [
+    paperReference: rectangularPaperReference(`K1993 Fig.5(${spec.figureIndex})`, [
       'Crystal grows from the left wall toward supercooled melt under adiabatic condition.',
       `K = ${spec.latentHeat.toFixed(1)}; ${spec.note}`
     ], localComparison('fig5Full'))
@@ -164,7 +164,7 @@ function fig6Preset(spec: Fig5PresetSpec): PhaseFieldConfig {
     anisotropyAngle: 0,
     seed: spec.seed,
     description: spec.description,
-    paperReference: rectangularPaperReference(`Kobayashi 1993 Fig.6(${spec.figureIndex})`, [
+    paperReference: rectangularPaperReference(`K1993 Fig.6(${spec.figureIndex})`, [
       'Crystal grows from the left wall toward supercooled melt under adiabatic condition.',
       '4-mode anisotropy with delta = 0.050; horizontal and vertical directions are epsilon maxima.',
       `K = ${spec.latentHeat.toFixed(1)}; ${spec.note}`
@@ -187,7 +187,7 @@ function fig8Preset(spec: Fig5PresetSpec): PhaseFieldConfig {
     anisotropyAngle: Math.PI / 2,
     seed: spec.seed,
     description: spec.description,
-    paperReference: paperReference(`Kobayashi 1993 Fig.8(${spec.figureIndex})`, [
+    paperReference: paperReference(`K1993 Fig.8(${spec.figureIndex})`, [
       `K = ${spec.latentHeat.toFixed(1)}, delta = 0.040, j = 6, theta0 = pi/2.`,
       spec.note
     ], localComparison('fig8'))
@@ -211,7 +211,7 @@ function fig9Preset(noiseAmplitude: number, seed: number, label: string): PhaseF
     seed,
     nucleusPlacement: 'bottom-edge',
     description: 'Paper-target non-oscillating dendrite side-branch noise comparison.',
-    paperReference: paperReference('Kobayashi 1993 Fig.9', [
+    paperReference: paperReference('K1993 Fig.9', [
       'K = 2.0, delta = 0.020, j = 4, theta0 = 0.',
       `Noise amplitude a = ${noiseAmplitude.toFixed(3)}; the paper compares a = 0.010, 0.001, and 0.000 at time = 1.0.`,
       'The paper labels side-branch competition regions I and II; the simulator reproduces the crystal contour only.'
@@ -317,7 +317,7 @@ export const presets: PhaseFieldConfig[] = [
     noiseAmplitude: 0,
     seed: 3100,
     description: 'Paper-target no-supercooling case where crystal grows inward from all cooled walls.',
-    paperReference: paperReference('Kobayashi 1993 Fig.3', [
+    paperReference: paperReference('K1993 Fig.3', [
       'No-supercooling isotropic case, K = 1.0.',
       'The vessel is cooled by the surrounding walls, so solidification advances inward from all walls.',
       'The interface rounds as it moves inward and disappears at late time.'
@@ -343,7 +343,7 @@ export const presets: PhaseFieldConfig[] = [
     noiseAmplitude: 0,
     seed: 4100,
     description: 'Paper-target planar-front stability check: crystal grows from the cooled left wall and the deformed front should flatten.',
-    paperReference: rectangularPaperReference('Kobayashi 1993 Fig.4', [
+    paperReference: rectangularPaperReference('K1993 Fig.4', [
       'No-supercooling isotropic case, K = 1.0.',
       'The vessel is cooled only by the left wall; no heat flux is allowed at other walls.',
       'The advancing interface becomes flat very quickly.'
@@ -356,7 +356,7 @@ export const presets: PhaseFieldConfig[] = [
     latentHeat: 0.8,
     seed: 5080,
     description: 'Paper-target directional solidification case where the flat interface should remain stable.',
-    note: 'Kobayashi reports a stable flat interface.'
+    note: 'The paper reports a stable flat interface.'
   }),
   fig5Preset({
     id: 'paper-fig5-k090-slight',
@@ -365,7 +365,7 @@ export const presets: PhaseFieldConfig[] = [
     latentHeat: 0.9,
     seed: 5090,
     description: 'Paper-target directional solidification case where the flat interface is slightly destabilized.',
-    note: 'Kobayashi reports the flat interface is a little bit destabilized.'
+    note: 'The paper reports the flat interface is a little bit destabilized.'
   }),
   fig5Preset({
     id: 'paper-fig5-k100-cellular',
@@ -374,7 +374,7 @@ export const presets: PhaseFieldConfig[] = [
     latentHeat: 1.0,
     seed: 5100,
     description: 'Paper-target directional solidification case where weak cellular instability appears.',
-    note: 'Kobayashi reports weak cellular structure.'
+    note: 'The paper reports weak cellular structure.'
   }),
   fig5Preset({
     id: 'paper-fig5-k110-cellular-slits',
@@ -383,7 +383,7 @@ export const presets: PhaseFieldConfig[] = [
     latentHeat: 1.1,
     seed: 5110,
     description: 'Paper-target directional solidification case where cellular slits can remain behind the front.',
-    note: 'Kobayashi reports weak cellular structure with slits that can remain behind the front.'
+    note: 'The paper reports weak cellular structure with slits that can remain behind the front.'
   }),
   fig5Preset({
     id: 'paper-fig5-k120-splitting',
@@ -392,7 +392,7 @@ export const presets: PhaseFieldConfig[] = [
     latentHeat: 1.2,
     seed: 5120,
     description: 'Paper-target directional solidification case where tip splitting should occur.',
-    note: 'Kobayashi reports tip splitting and branch competition in the channel.'
+    note: 'The paper reports tip splitting and branch competition in the channel.'
   }),
   fig5Preset({
     id: 'paper-fig5-k140-splitting',
@@ -401,7 +401,7 @@ export const presets: PhaseFieldConfig[] = [
     latentHeat: 1.4,
     seed: 5140,
     description: 'Paper-target directional solidification case with stronger splitting and branch competition.',
-    note: 'Kobayashi shows stronger tip splitting and branches spreading into the channel.'
+    note: 'The paper shows stronger tip splitting and branches spreading into the channel.'
   }),
   fig5Preset({
     id: 'paper-fig5-k160-competition',
@@ -410,7 +410,7 @@ export const presets: PhaseFieldConfig[] = [
     latentHeat: 1.6,
     seed: 5160,
     description: 'Paper-target directional solidification case where competing branches screen each other.',
-    note: 'Kobayashi reports branch competition and a decreased growth rate for K >= 1.6.'
+    note: 'The paper reports branch competition and a decreased growth rate for K >= 1.6.'
   }),
   fig5Preset({
     id: 'paper-fig5-k180-spreading',
@@ -419,7 +419,7 @@ export const presets: PhaseFieldConfig[] = [
     latentHeat: 1.8,
     seed: 5180,
     description: 'Paper-target directional solidification case with late spreading branches.',
-    note: 'Kobayashi shows slower growth with spreading branches at later times.'
+    note: 'The paper shows slower growth with spreading branches at later times.'
   }),
   fig5Preset({
     id: 'paper-fig5-k200-slow',
@@ -428,7 +428,7 @@ export const presets: PhaseFieldConfig[] = [
     latentHeat: 2.0,
     seed: 5200,
     description: 'Paper-target directional solidification case with slow late motion after partial solidification.',
-    note: 'Kobayashi shows late, slow interface motion for the largest K in Fig.5.'
+    note: 'The paper shows late, slow interface motion for the largest K in Fig.5.'
   }),
   fig6Preset({
     id: 'paper-fig6-k080-anisotropic',
@@ -437,7 +437,7 @@ export const presets: PhaseFieldConfig[] = [
     latentHeat: 0.8,
     seed: 6080,
     description: 'Paper-target four-fold anisotropic directional solidification case where the flat interface remains stable.',
-    note: 'Kobayashi shows a flat front in the anisotropic series.'
+    note: 'The paper shows a flat front in the anisotropic series.'
   }),
   fig6Preset({
     id: 'paper-fig6-k090-anisotropic',
@@ -446,7 +446,7 @@ export const presets: PhaseFieldConfig[] = [
     latentHeat: 0.9,
     seed: 6090,
     description: 'Paper-target four-fold anisotropic directional solidification case with weak cellular structure.',
-    note: 'Kobayashi shows weak cellular deformation.'
+    note: 'The paper shows weak cellular deformation.'
   }),
   fig6Preset({
     id: 'paper-fig6-k100-anisotropic',
@@ -455,7 +455,7 @@ export const presets: PhaseFieldConfig[] = [
     latentHeat: 1.0,
     seed: 6100,
     description: 'Paper-target four-fold anisotropic directional solidification case with weak cellular structure.',
-    note: 'Kobayashi shows weak cellular deformation.'
+    note: 'The paper shows weak cellular deformation.'
   }),
   fig6Preset({
     id: 'paper-fig6-k110-anisotropic',
@@ -464,7 +464,7 @@ export const presets: PhaseFieldConfig[] = [
     latentHeat: 1.1,
     seed: 6110,
     description: 'Paper-target four-fold anisotropic directional solidification case where slits remain behind the front.',
-    note: 'Kobayashi reports slits for K = 1.1, 1.2, and 1.4.'
+    note: 'The paper reports slits for K = 1.1, 1.2, and 1.4.'
   }),
   fig6Preset({
     id: 'paper-fig6-k120-anisotropic',
@@ -473,7 +473,7 @@ export const presets: PhaseFieldConfig[] = [
     latentHeat: 1.2,
     seed: 6120,
     description: 'Paper-target four-fold anisotropic directional solidification case with slit-like branch competition.',
-    note: 'Kobayashi shows long slits and branch competition.'
+    note: 'The paper shows long slits and branch competition.'
   }),
   fig6Preset({
     id: 'paper-fig6-k140-anisotropic',
@@ -482,7 +482,7 @@ export const presets: PhaseFieldConfig[] = [
     latentHeat: 1.4,
     seed: 6140,
     description: 'Paper-target four-fold anisotropic directional solidification case with long slit-like branches.',
-    note: 'Kobayashi shows long slits with limited lateral spreading.'
+    note: 'The paper shows long slits with limited lateral spreading.'
   }),
   fig6Preset({
     id: 'paper-fig6-k160-anisotropic',
@@ -491,7 +491,7 @@ export const presets: PhaseFieldConfig[] = [
     latentHeat: 1.6,
     seed: 6160,
     description: 'Paper-target four-fold anisotropic directional solidification case where branches compete differently from the isotropic case.',
-    note: 'Kobayashi reports branch competition and faster growth than the isotropic case.'
+    note: 'The paper reports branch competition and faster growth than the isotropic case.'
   }),
   fig6Preset({
     id: 'paper-fig6-k180-anisotropic',
@@ -500,7 +500,7 @@ export const presets: PhaseFieldConfig[] = [
     latentHeat: 1.8,
     seed: 6180,
     description: 'Paper-target four-fold anisotropic directional solidification case with side branches on fast branches.',
-    note: 'Kobayashi shows fast branches suppressing adjacent slower ones.'
+    note: 'The paper shows fast branches suppressing adjacent slower ones.'
   }),
   fig6Preset({
     id: 'paper-fig6-k200-anisotropic',
@@ -509,7 +509,7 @@ export const presets: PhaseFieldConfig[] = [
     latentHeat: 2.0,
     seed: 6200,
     description: 'Paper-target four-fold anisotropic directional solidification case with long anisotropy-aligned branches.',
-    note: 'Kobayashi shows long branches aligned with the anisotropic directions.'
+    note: 'The paper shows long branches aligned with the anisotropic directions.'
   }),
   {
     ...base,
@@ -525,8 +525,8 @@ export const presets: PhaseFieldConfig[] = [
     anisotropyAngle: 0,
     seed: 7000,
     nucleusPlacement: 'bottom-edge',
-    description: 'Paper-target isotropic bottom-edge nucleation corresponding to Kobayashi Fig.7(1).',
-    paperReference: paperReference('Kobayashi 1993 Fig.7(1)', [
+    description: 'Paper-target isotropic bottom-edge nucleation corresponding to K1993 Fig.7(1).',
+    paperReference: paperReference('K1993 Fig.7(1)', [
       'After nucleation at the center of the bottom edge, crystal grows into supercooled melt under adiabatic conditions.',
       'K = 2.0, four-mode family with delta = 0.000, effectively isotropic.',
       'Interface noise uses the paper default a = 0.010.'
@@ -547,7 +547,7 @@ export const presets: PhaseFieldConfig[] = [
     seed: 7005,
     nucleusPlacement: 'bottom-edge',
     description: 'Paper-target very weak four-fold case mixing isotropic fingering and dendritic vertical growth.',
-    paperReference: paperReference('Kobayashi 1993 Fig.7(2)', [
+    paperReference: paperReference('K1993 Fig.7(2)', [
       'K = 2.0, delta = 0.005, j = 4, theta0 = 0.',
       'The paper reports both isotropic viscous-fingering-like branches and dendritic structure in the vertical branch.',
       'Interface noise uses the paper default a = 0.010.'
@@ -567,8 +567,8 @@ export const presets: PhaseFieldConfig[] = [
     anisotropyAngle: 0,
     seed: 7010,
     nucleusPlacement: 'bottom-edge',
-    description: 'Paper-target weak four-fold case; Kobayashi describes typical dendritic side branches.',
-    paperReference: paperReference('Kobayashi 1993 Fig.7(3)', [
+    description: 'Paper-target weak four-fold case; the paper describes typical dendritic side branches.',
+    paperReference: paperReference('K1993 Fig.7(3)', [
       'K = 2.0, delta = 0.010, j = 4, theta0 = 0.',
       'The paper reports a typical dendritic structure with side branches shifted from the anisotropy direction.',
       'Interface noise uses the paper default a = 0.010.'
@@ -589,7 +589,7 @@ export const presets: PhaseFieldConfig[] = [
     seed: 7020,
     nucleusPlacement: 'bottom-edge',
     description: 'Paper-target stronger four-fold case with branches closer to anisotropy directions.',
-    paperReference: paperReference('Kobayashi 1993 Fig.7(4)', [
+    paperReference: paperReference('K1993 Fig.7(4)', [
       'K = 2.0, delta = 0.020, j = 4, theta0 = 0.',
       'The paper reports side branches that almost coincide with the anisotropy direction.',
       'Interface noise uses the paper default a = 0.010.'
@@ -610,9 +610,9 @@ export const presets: PhaseFieldConfig[] = [
     seed: 7050,
     nucleusPlacement: 'bottom-edge',
     description: 'Paper-target strong four-fold anisotropy for branch competition and screening.',
-    paperReference: paperReference('Kobayashi 1993 Fig.7(5)', [
+    paperReference: paperReference('K1993 Fig.7(5)', [
       'K = 2.0, delta = 0.050, j = 4, theta0 = 0.',
-      'Kobayashi uses this case later in Fig.11 for the anisotropy/stiffness discussion.',
+      'The paper uses this case later in Fig.11 for the anisotropy/stiffness discussion.',
       'Interface noise uses the paper default a = 0.010.'
     ], localComparison('fig7'))
   },
@@ -659,7 +659,7 @@ export const presets: PhaseFieldConfig[] = [
     latentHeat: 2.0,
     seed: 8200,
     description: 'Paper-target snowflake-like melt-growth case; not a vapor snowflake model.',
-    note: 'Kobayashi notes this is snowflake-like but corresponds to supercooled melt solidification, not vapor snow crystal growth.'
+    note: 'The paper notes this is snowflake-like but corresponds to supercooled melt solidification, not vapor snow crystal growth.'
   }),
   fig9Preset(0.01, 90010, 'noisy target'),
   fig9Preset(0.001, 90001, 'weak-noise target'),
@@ -696,7 +696,7 @@ export const presets: PhaseFieldConfig[] = [
       'Current reproduction: K = 2.5, delta = 0, a = 0.01, r = 7 cells, target snapshot t = 0.4.',
       'Full-domain mesh is 160 x 160 x 100 with dx = dy = dz = 0.03, so the physical domain is 4.8 x 4.8 x 3.0.',
       'The seed is a smooth sphere centered in x and y, half a grid cell outside the lower z Neumann face.',
-      'The selected t = 0.4 state has phi >= 0.5 bbox 138 x 139 x 68 cells in y/x/z order, leaving about 10-11 side cells and 32 top z cells of margin.'
+      'The selected t = 0.4 state has p >= 0.5 bbox 138 x 139 x 68 cells in y/x/z order, leaving about 10-11 side cells and 32 top z cells of margin.'
     ])
   },
   {
@@ -749,7 +749,7 @@ export const presets: PhaseFieldConfig[] = [
     seed: 10000,
     nucleusPlacement: 'bottom-edge',
     description: 'Paper-target control case for comparing side-branch sensitivity without stochastic noise.',
-    paperReference: paperReference('Kobayashi 1993 Fig.10', [
+    paperReference: paperReference('K1993 Fig.10', [
       'K = 2.0, delta = 0.010, noise amplitude a = 0.000.',
       'Fig.10 compares side branch structure against noise amplitudes a = 0.010, 0.001, and 0.000.'
     ], localComparison('fig10'))
@@ -770,7 +770,7 @@ export const presets: PhaseFieldConfig[] = [
     seed: 10001,
     nucleusPlacement: 'bottom-edge',
     description: 'Paper-target weak-noise comparison case for side-branch structure.',
-    paperReference: paperReference('Kobayashi 1993 Fig.10', [
+    paperReference: paperReference('K1993 Fig.10', [
       'K = 2.0, delta = 0.010, noise amplitude a = 0.001.',
       'Fig.10 compares side branch structure against noise amplitudes a = 0.010, 0.001, and 0.000.'
     ], localComparison('fig10'))
@@ -791,9 +791,9 @@ export const presets: PhaseFieldConfig[] = [
     seed: 10010,
     nucleusPlacement: 'bottom-edge',
     description: 'Paper-target noisy comparison case for side-branch structure.',
-    paperReference: paperReference('Kobayashi 1993 Fig.10', [
+    paperReference: paperReference('K1993 Fig.10', [
       'K = 2.0, delta = 0.010, noise amplitude a = 0.010.',
-      'Noise is applied as a phi(1-phi)X with X uniformly distributed on [-1/2, 1/2].'
+      'Noise is applied as p(1-p)X with X uniformly distributed on [-1/2, 1/2].'
     ], localComparison('fig10'))
   },
   {
