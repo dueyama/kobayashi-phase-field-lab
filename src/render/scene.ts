@@ -15,6 +15,7 @@ export class SceneRenderer {
   private readonly lights: THREE.Object3D[] = [];
   private activeDimension: '2d' | '3d' | null = null;
   private frame = 0;
+  private controlFrameId: number | null = null;
   private last3D:
     | {
         snapshot: SimulationSnapshot;
@@ -35,7 +36,8 @@ export class SceneRenderer {
     this.controls.rotateSpeed = 0.55;
     this.controls.zoomSpeed = 0.7;
     this.controls.addEventListener('change', () => {
-      this.renderer.render(this.scene, this.camera);
+      this.renderScene();
+      this.scheduleControlDampingFrame();
     });
     this.installLights();
     this.resize();
@@ -67,9 +69,8 @@ export class SceneRenderer {
       this.camera.lookAt(0, 0, 0);
       this.view2D.update(snapshot, config.viewMode);
     } else {
-      const presentation3D = config.surfaceStyle3D === 'gold';
       this.last3D = { snapshot, config };
-      this.controls.enabled = !presentation3D || config.interactiveView3D === true;
+      this.controls.enabled = config.interactiveView3D !== false;
       this.renderer.setClearColor(config.surfaceStyle3D === 'gold' ? 0x06234f : 0x03070d, 1);
       if (force) {
         this.apply3DCamera(snapshot, config);
@@ -78,7 +79,7 @@ export class SceneRenderer {
     }
 
     if (this.controls.enabled) this.controls.update();
-    this.renderer.render(this.scene, this.camera);
+    this.renderScene();
   }
 
   screenshot(): string {
@@ -102,6 +103,10 @@ export class SceneRenderer {
   }
 
   dispose(): void {
+    if (this.controlFrameId !== null) {
+      cancelAnimationFrame(this.controlFrameId);
+      this.controlFrameId = null;
+    }
     this.view2D.dispose();
     this.view3D.dispose();
     this.controls.dispose();
@@ -132,6 +137,21 @@ export class SceneRenderer {
     for (const light of this.lights) {
       this.scene.add(light);
     }
+  }
+
+  private renderScene(): void {
+    this.renderer.render(this.scene, this.camera);
+  }
+
+  private scheduleControlDampingFrame(): void {
+    if (!this.controls.enabled || !this.controls.enableDamping || this.controlFrameId !== null) return;
+    this.controlFrameId = requestAnimationFrame(() => {
+      this.controlFrameId = null;
+      if (!this.controls.enabled) return;
+      const changed = this.controls.update();
+      this.renderScene();
+      if (changed) this.scheduleControlDampingFrame();
+    });
   }
 
   private apply3DCamera(snapshot: SimulationSnapshot, config: PhaseFieldConfig): void {

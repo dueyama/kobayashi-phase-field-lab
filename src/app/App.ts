@@ -360,17 +360,23 @@ export class PhaseFieldApp {
       });
     });
 
-    root.querySelector<HTMLButtonElement>('[data-action="run"]')?.addEventListener('click', () => {
-      this.running = !this.running;
-      if (!this.running) this.stopLoop();
-      this.showLab();
-      if (this.running) this.startLoop();
+    root.querySelectorAll<HTMLButtonElement>('[data-action="run"]').forEach((button) => {
+      button.addEventListener('click', () => {
+        this.running = !this.running;
+        if (!this.running) this.stopLoop();
+        this.showLab();
+        if (this.running) this.startLoop();
+      });
     });
-    root.querySelector<HTMLButtonElement>('[data-action="step"]')?.addEventListener('click', () => {
-      void this.stepOnce();
+    root.querySelectorAll<HTMLButtonElement>('[data-action="step"]').forEach((button) => {
+      button.addEventListener('click', () => {
+        void this.stepOnce();
+      });
     });
-    root.querySelector<HTMLButtonElement>('[data-action="reset"]')?.addEventListener('click', () => {
-      void this.recreateSolver(true).then(() => this.renderCurrentState(true));
+    root.querySelectorAll<HTMLButtonElement>('[data-action="reset"]').forEach((button) => {
+      button.addEventListener('click', () => {
+        void this.recreateSolver(true).then(() => this.renderCurrentState(true));
+      });
     });
     root.querySelector<HTMLButtonElement>('[data-action="random-seed"]')?.addEventListener('click', () => {
       this.config.seed = Math.floor(1 + Math.random() * 999999);
@@ -532,8 +538,9 @@ export class PhaseFieldApp {
   }
 
   private updateRunButton(): void {
-    const button = this.viewRoot?.querySelector<HTMLButtonElement>('[data-action="run"]');
-    if (button) button.textContent = this.running ? 'Pause' : 'Run';
+    this.viewRoot?.querySelectorAll<HTMLButtonElement>('[data-action="run"]').forEach((button) => {
+      button.textContent = this.running ? 'Pause' : 'Run';
+    });
   }
 
   private syncRangeLabel(field: string, value: string): void {
@@ -784,6 +791,11 @@ function labTemplate(config: PhaseFieldConfig, running: boolean, solverStatus: s
           ${telemetryItem('T min / max', 'temp')}
         </div>
       </section>
+      <div class="mobile-run-dock" aria-label="Quick simulation controls">
+        <button class="primary" data-action="run">${running ? 'Pause' : 'Run'}</button>
+        <button data-action="step">Step</button>
+        <button data-action="reset">Reset</button>
+      </div>
       <aside class="inspector" aria-label="Simulation controls">
         <div class="inspector-inner">
           <section class="control-section">

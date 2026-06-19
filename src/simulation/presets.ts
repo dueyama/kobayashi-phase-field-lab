@@ -689,6 +689,7 @@ export const presets: PhaseFieldConfig[] = [
     renderMode3D: 'surface',
     surfaceStyle3D: 'gold',
     presentationView3D: 'upright',
+    interactiveView3D: true,
     description:
       'K2002 Fig.9 left reproduced target: full-domain isotropic 3D run with a smooth r=7 nucleus centered on the bottom x-y face.',
     paperReference: paperReference('K2002 Fig.9 left reproduced 3D target', [
