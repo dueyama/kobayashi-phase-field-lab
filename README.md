@@ -57,7 +57,7 @@ vercel.json
 ## App Pages
 
 - `Lab`: interactive simulator. Load a reproduction preset, modify parameters, run/step/reset, switch 2D/3D views, and export images, parameters, field states, or STL surfaces.
-- `Reproductions`: simulator-generated K1993 and K2002 outputs. K1993 entries show generated final-state thumbnails; K2002 entries provide MP4 animations, interactive final-state viewers, and STL downloads.
+- `Reproductions`: simulator-generated K1993 and K2002 outputs. K1993 entries show generated final-state thumbnails. K2002 entries provide MP4 animations, interactive final-state viewers, and STL downloads.
 - `Model & Method`: model equations, initial conditions, anisotropy, noise, boundary conditions, numerical scheme, 3D visualization method, outputs, and performance notes.
 - `References`: bibliographic references cited by the app.
 
@@ -72,7 +72,7 @@ tau * dp/dt = anisotropic_diffusion(p) + reaction(p, m(T)) + noise
 dT/dt       = D_T * Laplacian(T) + K * dp/dt
 ```
 
-The 2D anisotropic diffusion operator follows the half-grid flux form described in K2002. Paper-target bottom nuclei use a smooth tanh profile rather than a hard binary disk. The 2D solver advances `p` explicitly, then solves temperature diffusion implicitly with `K * (p_next - p_old)` on the right-hand side.
+The 2D anisotropic diffusion operator follows the half-grid flux form described in K2002. Paper-target bottom nuclei use a smooth tanh profile rather than a hard binary disk. The 2D solver advances `p` explicitly, then solves temperature diffusion implicitly with `K * (p_next - p_old)` on the right-hand side. Public CPU reproduction thumbnails use this CPU implicit-temperature path.
 
 The 3D four-fold target uses the K2002 vector anisotropy form around the interface normal direction. Quarter-domain symmetry cases are mirrored in x-y for display and STL export when appropriate.
 
@@ -105,7 +105,13 @@ The K2002 Fig.9-right STL uses the mirrored `100 x 100 x 200` display domain. Th
 
 This is an educational and exploratory browser simulator, not a calibrated production materials-science solver.
 
-High-resolution 3D browser runs are CPU-bound. On the Apple M1 Max development machine, TypeScript/WebGL animation runs took about 44 minutes for the K2002 Fig.9-left `160 x 160 x 100`, 2000-step case and about 48 minutes for the K2002 Fig.9-right `50 x 50 x 200`, 4500-step case. A separate TypeScript solver probe measured about `1.04 s/step` for a `100 x 100 x 300` right-type target, roughly 1.2 hours for 4000 steps before rendering overhead. Treat these as Apple Silicon M1-class reference timings, not a dedicated Safari benchmark.
+The public 3D reproduction media were generated with the CPU implicit-temperature solver. On the Apple M1 Max development machine, TypeScript/WebGL animation runs took about 44 minutes for the K2002 Fig.9-left `160 x 160 x 100`, 2000-step case and about 48 minutes for the K2002 Fig.9-right `50 x 50 x 200`, 4500-step case. Treat these as Apple Silicon M1-class reference timings, not a dedicated Safari benchmark.
+
+The Lab defaults to the experimental 2D WebGPU backend when WebGPU is available, and 3D presets can also opt into experimental WebGPU stepping. This path is a deliberately explicit GPGPU stencil solver: each compute-shader invocation updates one grid cell from the previous `p` and `T` buffers, reads only a small local neighborhood, writes the next buffers, and then ping-pongs the buffers for the following step. That local, uniform work is well matched to GPU hardware.
+
+The CPU reproduction path uses an implicit temperature solve, which is better for large `dt` but requires solving a coupled linear system. That kind of ICCG/Jacobi iteration is possible on a GPU, but it needs repeated global sweeps, reductions, and synchronization. The browser WebGPU path therefore uses explicit temperature integration instead. The cost is a stricter stability limit: diffusion and the latent-heat feedback term `K Δp` both constrain `dt`, and larger `K` requires a smaller `dt`.
+
+Even with a smaller `dt`, WebGPU can be faster because it updates many cells in parallel and can batch many solver steps before a visible frame. `steps/frame` is this display batching control; it does not change the numerical time step. The 3D Lab view still reads the fields back to JavaScript and rebuilds the isosurface on the CPU, so displayed frame rate can be lower than the raw compute rate. Because interface noise is sampled once per step, the app pre-scales the noise amplitude by `sqrt(reference dt / dt)` before passing it to WebGPU when `dt` is changed from a paper-target preset. The K2002 3D WebGPU presets use a common `dt = 5e-5` animation scale for both left and right targets; with `steps/frame = 45`, one display update advances about `0.00225` model time units.
 
 ## Deployment
 

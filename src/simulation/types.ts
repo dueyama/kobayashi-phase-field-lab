@@ -12,6 +12,7 @@ export type NucleusPlacement =
 export type ViewMode = 'phase' | 'temperature' | 'combined';
 export type RenderMode3D = 'surface' | 'slices' | 'volume';
 export type TemperatureSolver = 'jacobi' | 'iccg';
+export type SolverBackend = 'cpu' | 'webgpu-experimental';
 export type SurfaceStyle3D = 'field' | 'gold';
 export type PresentationView3D = 'upright' | 'z-right';
 
@@ -44,6 +45,7 @@ export interface PhaseFieldConfig {
   anisotropyFold: number;
   anisotropyAngle: number;
   noiseAmplitude: number;
+  noiseReferenceDt?: number;
   seed: number;
   boundaryCondition: BoundaryCondition;
   boundaryTemperature: number;
@@ -61,6 +63,7 @@ export interface PhaseFieldConfig {
   temperatureSolver?: TemperatureSolver;
   temperatureSolverIterations?: number;
   temperatureSolverTolerance?: number;
+  solverBackend?: SolverBackend;
   description?: string;
   paperReference?: PresetPaperReference;
 }

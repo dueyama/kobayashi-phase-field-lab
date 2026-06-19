@@ -517,6 +517,16 @@ button {
   border: 1px solid rgba(139, 213, 248, 0.18);
 }
 
+.solver-status,
+.benchmark-status {
+  border-left: 2px solid rgba(99, 220, 255, 0.45);
+  padding: 8px 10px;
+  color: #9fb8c8;
+  background: rgba(99, 220, 255, 0.055);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
 .secondary-action {
   width: 100%;
 }
@@ -1078,7 +1088,7 @@ input[type="range"] {
 
 .reproduction-card {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 180px;
+  grid-template-columns: minmax(0, 1fr) minmax(240px, 300px);
   align-items: stretch;
   min-height: 196px;
   border: 1px solid rgba(143, 212, 244, 0.16);
@@ -1163,6 +1173,20 @@ input[type="range"] {
   background: rgba(0, 0, 0, 0.18);
 }
 
+.reproduction-thumb-pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  min-width: 0;
+}
+
+.reproduction-thumb-item {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 7px;
+  min-width: 0;
+}
+
 .reproduction-thumb-frame {
   min-height: 0;
   overflow: hidden;
@@ -1181,6 +1205,11 @@ input[type="range"] {
   min-height: 126px;
   object-fit: contain;
   background: #f5f7f9;
+}
+
+.reproduction-thumb-pair .reproduction-thumb-frame img,
+.reproduction-thumb-pair .reproduction-thumb-placeholder {
+  min-height: 112px;
 }
 
 .reproduction-thumb-frame img.summary-crop {

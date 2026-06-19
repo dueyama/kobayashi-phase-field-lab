@@ -1,12 +1,23 @@
 import { SceneRenderer } from '../render/scene';
 import { PhaseField2D } from '../simulation/phaseField2D';
+import { PhaseField2DWebGpu, webGpuAvailability } from '../simulation/phaseField2DWebGpu';
 import { PhaseField3D } from '../simulation/phaseField3D';
+import { PhaseField3DWebGpu } from '../simulation/phaseField3DWebGpu';
 import { clonePreset, labPresets, presets } from '../simulation/presets';
 import { createStateExportBlob, parseStateExportArrayBuffer } from '../simulation/stateExport';
 import { createIsosurfaceStlBlob } from '../simulation/stlExport';
-import type { BoundaryCondition, Dimension, PhaseFieldConfig, RenderMode3D, SimulationSnapshot, ViewMode } from '../simulation/types';
+import type {
+  BoundaryCondition,
+  Dimension,
+  PhaseFieldConfig,
+  RenderMode3D,
+  SimulationSnapshot,
+  SolverBackend,
+  StepStats,
+  ViewMode
+} from '../simulation/types';
 
-type Solver = PhaseField2D | PhaseField3D;
+type Solver = PhaseField2D | PhaseField2DWebGpu | PhaseField3D | PhaseField3DWebGpu;
 type Page = 'lab' | 'reproduction' | 'model' | 'references';
 
 const APP_LINKS = {
@@ -14,9 +25,73 @@ const APP_LINKS = {
   liveSite: 'https://kobayashi-phase-field-lab.vercel.app'
 };
 
+const DEFAULT_LAB_PRESET_ID = 'paper-fig8-k200-sixfold';
+const DEFAULT_2D_SOLVER_BACKEND: SolverBackend = 'webgpu-experimental';
+const WEBGPU_DT_QUANTUM = 0.000025;
+const WEBGPU_MAX_DT = 0.0001;
+const WEBGPU_3D_MAX_DT = 0.00005;
+const WEBGPU_HIGH_K_MAX_DT = 0.00005;
+const WEBGPU_STABILITY_SAFETY = 0.8;
+const WEBGPU_MAX_STEPS_PER_FRAME = 120;
+const WEBGPU_3D_MAX_STEPS_PER_FRAME = 64;
+const WEBGPU_3D_TARGET_TIME_PER_FRAME = 0.00225;
+const WEBGPU_REPRODUCTION_VERSION = 'dt50-matched-20260619';
+
+function labConfigForPreset(presetId: string): PhaseFieldConfig {
+  const config = clonePreset(presetId);
+  if (config.dimension === '2d') {
+    config.solverBackend = DEFAULT_2D_SOLVER_BACKEND;
+    if (config.solverBackend === 'webgpu-experimental') applyWebGpuNumerics(config);
+  } else {
+    config.solverBackend = 'cpu';
+  }
+  return config;
+}
+
+function applyWebGpuNumerics(config: PhaseFieldConfig): void {
+  config.noiseReferenceDt ??= config.dt;
+  const targetFrameTime =
+    config.dimension === '3d'
+      ? Math.max(config.dt * config.stepsPerFrame, WEBGPU_3D_TARGET_TIME_PER_FRAME)
+      : Math.max(config.dt * config.stepsPerFrame, config.dt);
+  const maxStepsPerFrame = config.dimension === '3d' ? WEBGPU_3D_MAX_STEPS_PER_FRAME : WEBGPU_MAX_STEPS_PER_FRAME;
+  const recommendedDt = recommendedWebGpuDt(config);
+  if (config.dt > recommendedDt) config.dt = recommendedDt;
+  config.stepsPerFrame = Math.max(
+    1,
+    Math.min(maxStepsPerFrame, Math.max(config.stepsPerFrame, Math.round(targetFrameTime / config.dt)))
+  );
+}
+
+function recommendedWebGpuDt(config: PhaseFieldConfig): number {
+  const stabilityLimit = explicitTStabilityLimit(config, config.dimension === '3d' ? 3 : 2);
+  const dimensionLimit = config.dimension === '3d' ? WEBGPU_3D_MAX_DT : WEBGPU_MAX_DT;
+  const highKLimit = config.latentHeat >= 3 ? WEBGPU_HIGH_K_MAX_DT : dimensionLimit;
+  const target = Math.min(config.dt, dimensionLimit, highKLimit, stabilityLimit * WEBGPU_STABILITY_SAFETY);
+  const quantized = Math.floor((target + Number.EPSILON) / WEBGPU_DT_QUANTUM) * WEBGPU_DT_QUANTUM;
+  return Math.max(WEBGPU_DT_QUANTUM, quantized);
+}
+
+function dtSliderRange(config: PhaseFieldConfig): { min: number; max: number; step: number } {
+  const practicalMax = config.dimension === '3d' || config.solverBackend === 'webgpu-experimental' ? 0.0005 : 0.001;
+  return {
+    min: WEBGPU_DT_QUANTUM,
+    max: Math.max(practicalMax, config.dt),
+    step: WEBGPU_DT_QUANTUM
+  };
+}
+
+function restorePresetCpuNumerics(config: PhaseFieldConfig): void {
+  const preset = presets.find((item) => item.id === config.id);
+  if (!preset) return;
+  config.dt = preset.dt;
+  config.stepsPerFrame = preset.stepsPerFrame;
+  config.noiseReferenceDt = undefined;
+}
+
 export class PhaseFieldApp {
-  private config: PhaseFieldConfig = clonePreset('paper-fig8-k200-sixfold');
-  private solver: Solver = new PhaseField2D(this.config);
+  private config: PhaseFieldConfig = labConfigForPreset(DEFAULT_LAB_PRESET_ID);
+  private solver: Solver = new PhaseField2D({ ...this.config, solverBackend: 'cpu' });
   private renderer: SceneRenderer | null = null;
   private running = false;
   private page: Page = 'lab';
@@ -24,6 +99,9 @@ export class PhaseFieldApp {
   private fps = 0;
   private animationFrameId: number | null = null;
   private unstable = false;
+  private stepping = false;
+  private solverStatus = 'Initializing WebGPU...';
+  private benchmarkRunning = false;
   private viewRoot: HTMLElement | null = null;
   private resizeObserver: ResizeObserver | null = null;
   private reproductionState:
@@ -39,20 +117,21 @@ export class PhaseFieldApp {
     this.root.innerHTML = shellTemplate(this.page);
     this.viewRoot = this.root.querySelector<HTMLElement>('[data-view-root]');
     this.bindTopNav();
-    this.showLab();
+    void this.recreateSolver(true).then(() => this.showLab());
     window.addEventListener('resize', () => this.renderer?.resize());
   }
 
-  private tick(time: number): void {
+  private async tick(time: number): Promise<void> {
     this.animationFrameId = null;
-    if (!this.running || this.page !== 'lab') return;
+    if (!this.running || this.page !== 'lab' || this.stepping) return;
 
     const delta = Math.max(1, time - this.lastFrame);
     this.fps = this.fps * 0.88 + (1000 / delta) * 0.12;
     this.lastFrame = time;
 
     if (!this.unstable) {
-      const stats = this.solver.step(this.config.stepsPerFrame);
+      const stats = await this.stepSolver(this.config.stepsPerFrame);
+      if (!this.running || this.page !== 'lab') return;
       this.unstable = stats.unstable;
     }
 
@@ -61,7 +140,7 @@ export class PhaseFieldApp {
     this.updateTelemetry(snapshot);
 
     if (this.running && !this.unstable) {
-      this.animationFrameId = requestAnimationFrame((next) => this.tick(next));
+      this.animationFrameId = requestAnimationFrame((next) => void this.tick(next));
     } else {
       this.running = false;
       this.updateRunButton();
@@ -73,7 +152,7 @@ export class PhaseFieldApp {
     if (this.animationFrameId !== null) return;
     this.fps = 0;
     this.lastFrame = performance.now();
-    this.animationFrameId = requestAnimationFrame((time) => this.tick(time));
+    this.animationFrameId = requestAnimationFrame((time) => void this.tick(time));
   }
 
   private stopLoop(): void {
@@ -123,7 +202,7 @@ export class PhaseFieldApp {
     this.renderer = null;
     this.resizeObserver?.disconnect();
     this.resizeObserver = null;
-    this.viewRoot.innerHTML = labTemplate(this.config, this.running);
+    this.viewRoot.innerHTML = labTemplate(this.config, this.running, this.solverStatus, this.benchmarkRunning);
     const viewport = this.viewRoot.querySelector<HTMLElement>('[data-viewport]');
     if (!viewport) throw new Error('Missing viewport host.');
     this.renderer = new SceneRenderer(viewport);
@@ -155,7 +234,7 @@ export class PhaseFieldApp {
     this.viewRoot?.querySelectorAll<HTMLButtonElement>('[data-reproduction-preset]').forEach((button) => {
       button.addEventListener('click', () => {
         const presetId = button.dataset.reproductionPreset;
-        if (presetId) this.openPresetInLab(presetId);
+        if (presetId) void this.openPresetInLab(presetId);
       });
     });
     this.viewRoot?.querySelectorAll<HTMLButtonElement>('[data-reproduction-state]').forEach((button) => {
@@ -173,12 +252,12 @@ export class PhaseFieldApp {
     });
   }
 
-  private openPresetInLab(presetId: string): void {
+  private async openPresetInLab(presetId: string): Promise<void> {
     if (!presets.some((preset) => preset.id === presetId)) return;
-    this.config = clonePreset(presetId);
+    this.config = labConfigForPreset(presetId);
     this.running = false;
     this.stopLoop();
-    this.recreateSolver(true);
+    await this.recreateSolver(true);
     if (this.page === 'lab') {
       this.showLab();
       return;
@@ -264,22 +343,20 @@ export class PhaseFieldApp {
 
     root.querySelector<HTMLSelectElement>('[data-field="preset"]')?.addEventListener('change', (event) => {
       const id = (event.currentTarget as HTMLSelectElement).value;
-      this.config = clonePreset(id);
+      this.config = labConfigForPreset(id);
       this.running = false;
       this.stopLoop();
-      this.recreateSolver(true);
-      this.showLab();
+      void this.recreateSolver(true).then(() => this.showLab());
     });
 
     root.querySelectorAll<HTMLButtonElement>('[data-dimension]').forEach((button) => {
       button.addEventListener('click', () => {
         const dimension = button.dataset.dimension as Dimension;
         const preset = labPresets.find((item) => item.dimension === dimension) ?? labPresets[0] ?? presets[0];
-        this.config = clonePreset(preset.id);
+        this.config = labConfigForPreset(preset.id);
         this.running = false;
         this.stopLoop();
-        this.recreateSolver(true);
-        this.showLab();
+        void this.recreateSolver(true).then(() => this.showLab());
       });
     });
 
@@ -290,17 +367,14 @@ export class PhaseFieldApp {
       if (this.running) this.startLoop();
     });
     root.querySelector<HTMLButtonElement>('[data-action="step"]')?.addEventListener('click', () => {
-      this.solver.step(1);
-      this.renderCurrentState(true);
+      void this.stepOnce();
     });
     root.querySelector<HTMLButtonElement>('[data-action="reset"]')?.addEventListener('click', () => {
-      this.recreateSolver(true);
-      this.renderCurrentState(true);
+      void this.recreateSolver(true).then(() => this.renderCurrentState(true));
     });
     root.querySelector<HTMLButtonElement>('[data-action="random-seed"]')?.addEventListener('click', () => {
       this.config.seed = Math.floor(1 + Math.random() * 999999);
-      this.recreateSolver(true);
-      this.showLab();
+      void this.recreateSolver(true).then(() => this.showLab());
     });
     root.querySelector<HTMLButtonElement>('[data-action="export"]')?.addEventListener('click', () => {
       this.exportParameters();
@@ -317,13 +391,19 @@ export class PhaseFieldApp {
     root.querySelector<HTMLButtonElement>('[data-action="screenshot"]')?.addEventListener('click', () => {
       this.exportScreenshot();
     });
+    root.querySelector<HTMLButtonElement>('[data-action="benchmark"]')?.addEventListener('click', () => {
+      void this.runBenchmark();
+    });
+    root.querySelector<HTMLButtonElement>('[data-action="dt-sweep"]')?.addEventListener('click', () => {
+      void this.runDtSweep();
+    });
 
     bindNumber(root, 'stepsPerFrame', (value) => {
       this.config.stepsPerFrame = Math.max(1, Math.round(value));
     });
     bindNumber(root, 'seed', (value) => {
       this.config.seed = Math.max(1, Math.round(value));
-      this.recreateSolver(true);
+      void this.recreateSolver(true).then(() => this.renderCurrentState(true));
     });
     bindSelect(root, 'viewMode', (value) => {
       this.config.viewMode = value as ViewMode;
@@ -336,12 +416,27 @@ export class PhaseFieldApp {
     bindSelect(root, 'boundaryCondition', (value) => {
       this.config.boundaryCondition = value as BoundaryCondition;
     });
+    bindSelect(root, 'solverBackend', (value) => {
+      this.config.solverBackend = value as SolverBackend;
+      if (this.config.solverBackend === 'webgpu-experimental') {
+        applyWebGpuNumerics(this.config);
+      } else {
+        restorePresetCpuNumerics(this.config);
+      }
+      this.running = false;
+      this.stopLoop();
+      void this.recreateSolver(true).then(() => this.showLab());
+    });
     bindRange(root, 'anisotropyStrength', (value) => {
       this.config.anisotropyStrength = value;
       this.syncRangeLabel('anisotropyStrength', value.toFixed(3));
     });
     bindRange(root, 'latentHeat', (value) => {
       this.config.latentHeat = value;
+      if (this.config.solverBackend === 'webgpu-experimental') {
+        applyWebGpuNumerics(this.config);
+        this.syncRangeLabel('dt', formatDt(this.config.dt));
+      }
       this.syncRangeLabel('latentHeat', value.toFixed(2));
     });
     bindRange(root, 'undercooling', (value) => {
@@ -354,6 +449,7 @@ export class PhaseFieldApp {
     });
     bindRange(root, 'dt', (value) => {
       this.config.dt = value;
+      if (this.config.solverBackend === 'webgpu-experimental') this.config.noiseReferenceDt ??= value;
       this.syncRangeLabel('dt', formatDt(value));
     });
     bindSelect(root, 'gridSize', (value) => {
@@ -365,14 +461,52 @@ export class PhaseFieldApp {
         this.config.nucleusPlacement === 'left-wall'
           ? Math.max(4, Math.round(nx * 0.045))
           : Math.max(4, Math.round(Math.min(nx, ny) * (this.config.dimension === '3d' ? 0.13 : 0.055)));
-      this.recreateSolver(true);
-      this.showLab();
+      void this.recreateSolver(true).then(() => this.showLab());
     });
   }
 
-  private recreateSolver(resetUnstable: boolean): void {
-    this.solver = this.config.dimension === '2d' ? new PhaseField2D(this.config) : new PhaseField3D(this.config);
+  private async stepOnce(): Promise<void> {
+    if (this.stepping) return;
+    const stats = await this.stepSolver(1);
+    this.unstable = stats.unstable;
+    this.renderCurrentState(true);
+  }
+
+  private async stepSolver(count: number): Promise<StepStats> {
+    this.stepping = true;
+    try {
+      return await this.solver.step(count);
+    } finally {
+      this.stepping = false;
+    }
+  }
+
+  private async recreateSolver(resetUnstable: boolean): Promise<void> {
+    this.disposeSolver();
+    if ((this.config.solverBackend ?? 'cpu') === 'webgpu-experimental') {
+      try {
+        this.solver =
+          this.config.dimension === '2d' ? await PhaseField2DWebGpu.create(this.config) : await PhaseField3DWebGpu.create(this.config);
+        this.solverStatus =
+          this.config.dimension === '2d'
+            ? 'WebGPU experimental 2D: explicit p / explicit T'
+            : 'WebGPU experimental 3D: explicit p / explicit T';
+      } catch (error: unknown) {
+        this.solver = this.config.dimension === '2d' ? new PhaseField2D(this.config) : new PhaseField3D(this.config);
+        const message = error instanceof Error ? error.message : String(error);
+        this.solverStatus = `CPU fallback: ${message}`;
+      }
+    } else {
+      this.solver = this.config.dimension === '2d' ? new PhaseField2D(this.config) : new PhaseField3D(this.config);
+      this.solverStatus = this.config.dimension === '2d' ? 'CPU: explicit p / implicit T' : 'CPU: 3D explicit p / implicit T';
+    }
     if (resetUnstable) this.unstable = false;
+  }
+
+  private disposeSolver(): void {
+    if (this.solver instanceof PhaseField2DWebGpu || this.solver instanceof PhaseField3DWebGpu) {
+      this.solver.dispose();
+    }
   }
 
   private updateTelemetry(snapshot: SimulationSnapshot): void {
@@ -405,6 +539,142 @@ export class PhaseFieldApp {
   private syncRangeLabel(field: string, value: string): void {
     const node = this.viewRoot?.querySelector<HTMLElement>(`[data-value="${field}"]`);
     if (node) node.textContent = value;
+  }
+
+  private async runBenchmark(): Promise<void> {
+    if (this.benchmarkRunning) return;
+    this.running = false;
+    this.stopLoop();
+    this.benchmarkRunning = true;
+    const status = this.viewRoot?.querySelector<HTMLElement>('[data-benchmark-status]');
+    const button = this.viewRoot?.querySelector<HTMLButtonElement>('[data-action="benchmark"]');
+    if (button) {
+      button.disabled = true;
+      button.textContent = 'Benchmarking...';
+    }
+    if (status) status.textContent = 'Running CPU benchmark...';
+
+    const benchmarkConfig: PhaseFieldConfig = {
+      ...this.config,
+      nz: this.config.dimension === '2d' ? 1 : this.config.nz,
+      solverBackend: 'cpu'
+    };
+    const steps = benchmarkStepCount(benchmarkConfig);
+    try {
+      const cpuSolver = benchmarkConfig.dimension === '2d' ? new PhaseField2D(benchmarkConfig) : new PhaseField3D(benchmarkConfig);
+      const cpuStart = performance.now();
+      cpuSolver.step(steps);
+      const cpuMs = performance.now() - cpuStart;
+      const cpuSnapshot = cpuSolver.snapshot();
+      const targetTime = benchmarkConfig.dt * steps;
+      const availability = webGpuAvailability();
+      if (!availability.available) {
+        if (status) {
+          status.textContent = `CPU ${steps} steps: ${formatBenchmark(cpuMs, steps)}. WebGPU unavailable: ${availability.reason}`;
+        }
+        return;
+      }
+
+      if (status) status.textContent = 'Running WebGPU benchmark...';
+      const gpuConfig: PhaseFieldConfig = { ...benchmarkConfig, solverBackend: 'webgpu-experimental' };
+      if (gpuConfig.solverBackend === 'webgpu-experimental') applyWebGpuNumerics(gpuConfig);
+      const gpuSteps = Math.max(1, Math.round(targetTime / gpuConfig.dt));
+      const gpuSolver =
+        benchmarkConfig.dimension === '2d' ? await PhaseField2DWebGpu.create(gpuConfig) : await PhaseField3DWebGpu.create(gpuConfig);
+      try {
+        const gpuStart = performance.now();
+        await gpuSolver.step(gpuSteps);
+        const gpuMs = performance.now() - gpuStart;
+        const speedup = cpuMs / Math.max(gpuMs, 1e-6);
+        const gpuSnapshot = gpuSolver.snapshot();
+        const phiDifference = compareFields(cpuSnapshot.phi, gpuSnapshot.phi);
+        const temperatureDifference = compareFields(cpuSnapshot.temperature, gpuSnapshot.temperature);
+        if (status) {
+          status.textContent = `${benchmarkConfig.dimension.toUpperCase()} same-time t=${compactNumber(targetTime)}: CPU ${steps} steps ${formatBenchmark(cpuMs, steps)}; WebGPU ${gpuSteps} steps ${formatBenchmark(gpuMs, gpuSteps)} at dt=${compactNumber(gpuConfig.dt)}; wall-clock speedup ${speedup.toFixed(2)}x; Δp max/RMS ${phiDifference.max.toExponential(2)}/${phiDifference.rms.toExponential(2)}, ΔT max/RMS ${temperatureDifference.max.toExponential(2)}/${temperatureDifference.rms.toExponential(2)}.`;
+        }
+      } finally {
+        gpuSolver.dispose();
+      }
+    } catch (error: unknown) {
+      if (status) status.textContent = error instanceof Error ? `Benchmark failed: ${error.message}` : `Benchmark failed: ${String(error)}`;
+    } finally {
+      this.benchmarkRunning = false;
+      if (button) {
+        button.disabled = false;
+        button.textContent = 'Benchmark CPU / WebGPU';
+      }
+    }
+  }
+
+  private async runDtSweep(): Promise<void> {
+    if (this.benchmarkRunning) return;
+    this.running = false;
+    this.stopLoop();
+    this.benchmarkRunning = true;
+    const status = this.viewRoot?.querySelector<HTMLElement>('[data-benchmark-status]');
+    const buttons = this.viewRoot?.querySelectorAll<HTMLButtonElement>('[data-action="benchmark"], [data-action="dt-sweep"]');
+    buttons?.forEach((button) => {
+      button.disabled = true;
+    });
+
+    const availability = webGpuAvailability();
+    if (!availability.available) {
+      if (status) status.textContent = `dt sweep needs WebGPU: ${availability.reason}`;
+      buttons?.forEach((button) => {
+        button.disabled = false;
+      });
+      this.benchmarkRunning = false;
+      return;
+    }
+
+    const baseConfig: PhaseFieldConfig = {
+      ...this.config,
+      nz: this.config.dimension === '2d' ? 1 : this.config.nz,
+      noiseAmplitude: 0
+    };
+    const baseSteps = Math.min(32, benchmarkStepCount(baseConfig));
+    const targetTime = baseConfig.dt * baseSteps;
+    const dtValues = [baseConfig.dt, baseConfig.dt / 2, baseConfig.dt / 4, baseConfig.dt / 8].filter(
+      (value, index, values) => value > 0 && values.indexOf(value) === index
+    );
+    const rows: string[] = [];
+
+    try {
+      for (const dt of dtValues) {
+        const steps = Math.max(1, Math.round(targetTime / dt));
+        if (status) status.textContent = `Running dt sweep: dt=${compactNumber(dt)}, steps=${steps}...`;
+        const testConfig: PhaseFieldConfig = { ...baseConfig, dt };
+        const cpuConfig: PhaseFieldConfig = { ...testConfig, solverBackend: 'cpu' };
+        const gpuConfig: PhaseFieldConfig = { ...testConfig, noiseReferenceDt: baseConfig.dt, solverBackend: 'webgpu-experimental' };
+        const cpuSolver = testConfig.dimension === '2d' ? new PhaseField2D(cpuConfig) : new PhaseField3D(cpuConfig);
+        const gpuSolver =
+          testConfig.dimension === '2d' ? await PhaseField2DWebGpu.create(gpuConfig) : await PhaseField3DWebGpu.create(gpuConfig);
+        try {
+          const cpuStats = cpuSolver.step(steps);
+          const gpuStats = await gpuSolver.step(steps);
+          const cpuSnapshot = cpuSolver.snapshot();
+          const gpuSnapshot = gpuSolver.snapshot();
+          const phiDifference = compareFields(cpuSnapshot.phi, gpuSnapshot.phi);
+          const temperatureDifference = compareFields(cpuSnapshot.temperature, gpuSnapshot.temperature);
+          const unstable = cpuStats.unstable || gpuStats.unstable ? ', unstable' : '';
+          rows.push(
+            `dt=${compactNumber(dt)} (${steps} steps): Δp ${phiDifference.max.toExponential(2)}/${phiDifference.rms.toExponential(2)}, ΔT ${temperatureDifference.max.toExponential(2)}/${temperatureDifference.rms.toExponential(2)}${unstable}`
+          );
+        } finally {
+          gpuSolver.dispose();
+        }
+      }
+      if (status) {
+        status.textContent = `Implicit-vs-explicit sweep at K=${baseConfig.latentHeat.toFixed(2)}, noise=0, target t=${targetTime.toExponential(2)}: ${rows.join(' | ')}`;
+      }
+    } catch (error: unknown) {
+      if (status) status.textContent = error instanceof Error ? `dt sweep failed: ${error.message}` : `dt sweep failed: ${String(error)}`;
+    } finally {
+      this.benchmarkRunning = false;
+      buttons?.forEach((button) => {
+        button.disabled = false;
+      });
+    }
   }
 
   private exportParameters(): void {
@@ -490,11 +760,12 @@ function navButton(page: Page, label: string, active: Page): string {
   return `<button class="nav-tab" data-page="${page}" aria-selected="${page === active}">${label}</button>`;
 }
 
-function labTemplate(config: PhaseFieldConfig, running: boolean): string {
+function labTemplate(config: PhaseFieldConfig, running: boolean, solverStatus: string, benchmarkRunning: boolean): string {
   const baseGridOptions = config.dimension === '2d' ? [96, 128, 160, 192, 256, 300] : [36, 48, 64, 80, 100, 128];
   const gridOptions = [...new Set([...baseGridOptions, config.nx])].sort((a, b) => a - b);
   const hasReproducedFigure = Boolean(reproductionThumbnail(config.id));
   const latentHeatMax = Math.max(2.2, Math.ceil(config.latentHeat * 10) / 10);
+  const dtRange = dtSliderRange(config);
   return `
     <div class="lab-layout">
       <section class="visual-stage ${hasReproducedFigure ? 'has-comparison' : ''}" aria-label="Simulation view">
@@ -542,9 +813,27 @@ function labTemplate(config: PhaseFieldConfig, running: boolean): string {
           </section>
 
           <section class="control-section">
-            <div class="section-title"><span>Numerics</span><span>Explicit p / implicit T</span></div>
+            <div class="section-title"><span>Numerics</span><span>${solverBackendLabel(config)}</span></div>
             <div class="section-body">
-              ${numberControl('Steps / frame', 'stepsPerFrame', config.stepsPerFrame, 1, 24)}
+              <div class="control-row">
+                <label class="control-label" for="solverBackend">Solver backend</label>
+                <select id="solverBackend" data-field="solverBackend">
+                  ${option('cpu', 'CPU implicit T', config.solverBackend ?? 'cpu')}
+                  ${option('webgpu-experimental', 'WebGPU experimental', config.solverBackend ?? 'cpu')}
+                </select>
+              </div>
+              <div class="solver-status" data-solver-status>${escapeHtml(solverStatus)}</div>
+              ${numberControl(
+                'Steps / frame',
+                'stepsPerFrame',
+                config.stepsPerFrame,
+                1,
+                config.solverBackend === 'webgpu-experimental'
+                  ? config.dimension === '3d'
+                    ? WEBGPU_3D_MAX_STEPS_PER_FRAME
+                    : WEBGPU_MAX_STEPS_PER_FRAME
+                  : 24
+              )}
               ${gridSizeControl(config.dimension, gridOptions, config.nx, config.ny, config.nz)}
               <div class="control-row">
                 <label class="control-label" for="boundaryCondition">Boundary</label>
@@ -554,8 +843,15 @@ function labTemplate(config: PhaseFieldConfig, running: boolean): string {
                   ${option('left-fixed-temperature', 'Left wall fixed T', config.boundaryCondition)}
                 </select>
               </div>
-              ${rangeControl('dt', 'dt', config.dt, 0.0001, 0.08, 0.0001, formatDt(config.dt))}
+              ${rangeControl('dt', 'dt', config.dt, dtRange.min, dtRange.max, dtRange.step, formatDt(config.dt))}
               ${numberControl('Seed', 'seed', config.seed, 1, 999999)}
+              <div class="action-row single">
+                <button data-action="benchmark" ${benchmarkRunning ? 'disabled' : ''}>${benchmarkRunning ? 'Benchmarking...' : 'Benchmark CPU / WebGPU'}</button>
+              </div>
+              <div class="action-row single">
+                <button data-action="dt-sweep" ${benchmarkRunning ? 'disabled' : ''}>dt sweep at current K</button>
+              </div>
+              <div class="benchmark-status" data-benchmark-status>${webGpuStatusText(config)}</div>
             </div>
           </section>
 
@@ -724,12 +1020,12 @@ function comparisonPanel(config: PhaseFieldConfig): string {
     <aside class="comparison-panel">
       <div class="comparison-header">
         <span>Reproduced figure</span>
-        <span>simulation final state</span>
+        <span>CPU implicit-T final state</span>
       </div>
       <div class="comparison-image-box">
         <img src="${thumbnail.src}" alt="${config.paperReference?.label ?? config.name} reproduced final state" />
       </div>
-      <p class="comparison-caption">Generated by this simulator from the selected preset parameters.</p>
+      <p class="comparison-caption">Generated with the CPU implicit-temperature solver from the selected preset parameters.</p>
     </aside>
   `;
 }
@@ -782,7 +1078,61 @@ function rangeControl(label: string, field: string, value: number, min: number, 
 }
 
 function formatDt(value: number): string {
-  return value < 0.001 ? value.toFixed(4) : value.toFixed(3);
+  return value < 0.001 ? compactNumber(value) : value.toFixed(3);
+}
+
+function solverBackendLabel(config: PhaseFieldConfig): string {
+  const backend = (config.solverBackend ?? 'cpu') === 'webgpu-experimental' ? 'WebGPU trial' : 'CPU';
+  return config.dimension === '3d' ? `${backend} 3D` : backend;
+}
+
+function webGpuStatusText(config: PhaseFieldConfig): string {
+  const availability = webGpuAvailability();
+  if (availability.available) return `WebGPU available. ${explicitTStabilityText(config)}`;
+  return `WebGPU unavailable here: ${availability.reason}`;
+}
+
+function explicitTStabilityText(config: PhaseFieldConfig): string {
+  const currentLimit = explicitTStabilityLimit(config, config.dimension === '3d' ? 3 : 2);
+  const k2002Limit = explicitTStabilityLimit({ ...config, latentHeat: 3.5, dx: 0.03, temperatureDiffusivity: 1, tau: 0.0003 }, 3);
+  return `Explicit T estimate: current dtmax≈${compactNumber(currentLimit)}, K=3.5 3D dtmax≈${compactNumber(k2002Limit)}; 3D WebGPU presets use dt≈0.00005 for a common animation scale.`;
+}
+
+function explicitTStabilityLimit(config: PhaseFieldConfig, dimensions: 2 | 3): number {
+  const diffusionMagnitude = (4 * dimensions * config.temperatureDiffusivity) / (config.dx * config.dx);
+  const maxDriveDerivative = (config.driveAlpha * config.driveGamma) / Math.PI;
+  const latentFeedbackMagnitude = (config.latentHeat / config.tau) * 0.25 * maxDriveDerivative;
+  return 2 / (diffusionMagnitude + latentFeedbackMagnitude);
+}
+
+function benchmarkStepCount(config: PhaseFieldConfig): number {
+  const cells = config.nx * config.ny * (config.dimension === '3d' ? config.nz : 1);
+  if (config.dimension === '3d') {
+    if (cells >= 1_000_000) return 1;
+    if (cells >= 400_000) return 2;
+    if (cells >= 100_000) return 4;
+    return 8;
+  }
+  if (cells >= 90_000) return 32;
+  if (cells >= 40_000) return 64;
+  return 96;
+}
+
+function formatBenchmark(milliseconds: number, steps: number): string {
+  return `${milliseconds.toFixed(1)} ms total, ${(milliseconds / steps).toFixed(2)} ms/step`;
+}
+
+function compareFields(a: Float32Array, b: Float32Array): { max: number; rms: number } {
+  const length = Math.min(a.length, b.length);
+  if (length === 0) return { max: 0, rms: 0 };
+  let max = 0;
+  let sumSquares = 0;
+  for (let i = 0; i < length; i += 1) {
+    const delta = Math.abs(a[i] - b[i]);
+    if (delta > max) max = delta;
+    sumSquares += delta * delta;
+  }
+  return { max, rms: Math.sqrt(sumSquares / length) };
 }
 
 function option<T extends string>(value: T, label: string, current: T): string {
@@ -883,53 +1233,53 @@ const kobayashi1993ReproductionGroups: ReproductionGroup[] = [
 ];
 
 const reproductionThumbnails: Record<string, ReproductionThumbnail> = {
-      'paper-fig3-inward-walls': { src: '/reproductions/fig3_k100_step_48000.png', label: 'simulation final state' },
+      'paper-fig3-inward-walls': { src: '/reproductions/fig3_k100_step_48000.png', label: 'CPU implicit-T final state' },
       'paper-fig4-planar-k100': {
         src: '/reproductions/fig4_k100_step_10000.png',
-        label: 'simulation final state'
+        label: 'CPU implicit-T final state'
       }
       ,
-      'paper-fig5-k080-planar': { src: '/reproductions/fig5_k080_step_03500.png', label: 'simulation final state' },
-      'paper-fig5-k090-slight': { src: '/reproductions/fig5_k090_step_03500.png', label: 'simulation final state' },
-      'paper-fig5-k100-cellular': { src: '/reproductions/fig5_k100_step_03500.png', label: 'simulation final state' },
-      'paper-fig5-k110-cellular-slits': { src: '/reproductions/fig5_k110_step_03500.png', label: 'simulation final state' },
-      'paper-fig5-k120-splitting': { src: '/reproductions/fig5_k120_step_03500.png', label: 'simulation final state' },
-      'paper-fig5-k140-splitting': { src: '/reproductions/fig5_k140_step_03500.png', label: 'simulation final state' },
-      'paper-fig5-k160-competition': { src: '/reproductions/fig5_k160_step_05000.png', label: 'simulation final state' },
-      'paper-fig5-k180-spreading': { src: '/reproductions/fig5_k180_step_10000.png', label: 'simulation final state' },
-      'paper-fig5-k200-slow': { src: '/reproductions/fig5_k200_step_14000.png', label: 'simulation final state' },
-      'paper-fig6-k080-anisotropic': { src: '/reproductions/fig6_k080_step_03500.png', label: 'simulation final state' },
-      'paper-fig6-k090-anisotropic': { src: '/reproductions/fig6_k090_step_03500.png', label: 'simulation final state' },
-      'paper-fig6-k100-anisotropic': { src: '/reproductions/fig6_k100_step_03500.png', label: 'simulation final state' },
-      'paper-fig6-k110-anisotropic': { src: '/reproductions/fig6_k110_step_03500.png', label: 'simulation final state' },
-      'paper-fig6-k120-anisotropic': { src: '/reproductions/fig6_k120_step_03500.png', label: 'simulation final state' },
-      'paper-fig6-k140-anisotropic': { src: '/reproductions/fig6_k140_step_03500.png', label: 'simulation final state' },
-      'paper-fig6-k160-anisotropic': { src: '/reproductions/fig6_k160_step_05000.png', label: 'simulation final state' },
-      'paper-fig6-k180-anisotropic': { src: '/reproductions/fig6_k180_step_05000.png', label: 'simulation final state' },
-      'paper-fig6-k200-anisotropic': { src: '/reproductions/fig6_k200_step_05000.png', label: 'simulation final state' },
-      'paper-fig7-delta000': { src: '/reproductions/fig7_delta000_step_07000.png', label: 'simulation final state' },
-      'paper-fig7-delta005': { src: '/reproductions/fig7_delta005_step_07000.png', label: 'simulation final state' },
-      'paper-fig7-delta010': { src: '/reproductions/fig7_delta010_step_07000.png', label: 'simulation final state' },
-      'paper-fig7-delta020': { src: '/reproductions/fig7_delta020_step_07000.png', label: 'simulation final state' },
-      'paper-fig7-delta050': { src: '/reproductions/fig7_delta050_step_07000.png', label: 'simulation final state' },
-      'paper-fig8-k080-sixfold': { src: '/reproductions/fig8_k080_step_01000.png', label: 'simulation final state' },
-      'paper-fig8-k100-sixfold': { src: '/reproductions/fig8_k100_step_01250.png', label: 'simulation final state' },
-      'paper-fig8-k120-sixfold': { src: '/reproductions/fig8_k120_step_01400.png', label: 'simulation final state' },
-      'paper-fig8-k160-sixfold': { src: '/reproductions/fig8_k160_step_01800.png', label: 'simulation final state' },
-      'paper-fig8-k200-sixfold': { src: '/reproductions/fig8_k200_step_02400.png', label: 'simulation final state' },
-      'paper-fig9-noise010': { src: '/reproductions/fig9_noise010_step_05000.png', label: 'simulation final state' },
-      'paper-fig9-noise001': { src: '/reproductions/fig9_noise001_step_05000.png', label: 'simulation final state' },
-      'paper-fig9-no-noise': { src: '/reproductions/fig9_noise000_step_05000.png', label: 'simulation final state' },
-      'paper-fig10-noise010': { src: '/reproductions/fig10_noise010_step_06500.png', label: 'simulation final state' },
-      'paper-fig10-noise001': { src: '/reproductions/fig10_noise001_step_06500.png', label: 'simulation final state' },
-      'paper-fig10-no-noise': { src: '/reproductions/fig10_noise000_step_06500.png', label: 'simulation final state' },
+      'paper-fig5-k080-planar': { src: '/reproductions/fig5_k080_step_03500.png', label: 'CPU implicit-T final state' },
+      'paper-fig5-k090-slight': { src: '/reproductions/fig5_k090_step_03500.png', label: 'CPU implicit-T final state' },
+      'paper-fig5-k100-cellular': { src: '/reproductions/fig5_k100_step_03500.png', label: 'CPU implicit-T final state' },
+      'paper-fig5-k110-cellular-slits': { src: '/reproductions/fig5_k110_step_03500.png', label: 'CPU implicit-T final state' },
+      'paper-fig5-k120-splitting': { src: '/reproductions/fig5_k120_step_03500.png', label: 'CPU implicit-T final state' },
+      'paper-fig5-k140-splitting': { src: '/reproductions/fig5_k140_step_03500.png', label: 'CPU implicit-T final state' },
+      'paper-fig5-k160-competition': { src: '/reproductions/fig5_k160_step_05000.png', label: 'CPU implicit-T final state' },
+      'paper-fig5-k180-spreading': { src: '/reproductions/fig5_k180_step_10000.png', label: 'CPU implicit-T final state' },
+      'paper-fig5-k200-slow': { src: '/reproductions/fig5_k200_step_14000.png', label: 'CPU implicit-T final state' },
+      'paper-fig6-k080-anisotropic': { src: '/reproductions/fig6_k080_step_03500.png', label: 'CPU implicit-T final state' },
+      'paper-fig6-k090-anisotropic': { src: '/reproductions/fig6_k090_step_03500.png', label: 'CPU implicit-T final state' },
+      'paper-fig6-k100-anisotropic': { src: '/reproductions/fig6_k100_step_03500.png', label: 'CPU implicit-T final state' },
+      'paper-fig6-k110-anisotropic': { src: '/reproductions/fig6_k110_step_03500.png', label: 'CPU implicit-T final state' },
+      'paper-fig6-k120-anisotropic': { src: '/reproductions/fig6_k120_step_03500.png', label: 'CPU implicit-T final state' },
+      'paper-fig6-k140-anisotropic': { src: '/reproductions/fig6_k140_step_03500.png', label: 'CPU implicit-T final state' },
+      'paper-fig6-k160-anisotropic': { src: '/reproductions/fig6_k160_step_05000.png', label: 'CPU implicit-T final state' },
+      'paper-fig6-k180-anisotropic': { src: '/reproductions/fig6_k180_step_05000.png', label: 'CPU implicit-T final state' },
+      'paper-fig6-k200-anisotropic': { src: '/reproductions/fig6_k200_step_05000.png', label: 'CPU implicit-T final state' },
+      'paper-fig7-delta000': { src: '/reproductions/fig7_delta000_step_07000.png', label: 'CPU implicit-T final state' },
+      'paper-fig7-delta005': { src: '/reproductions/fig7_delta005_step_07000.png', label: 'CPU implicit-T final state' },
+      'paper-fig7-delta010': { src: '/reproductions/fig7_delta010_step_07000.png', label: 'CPU implicit-T final state' },
+      'paper-fig7-delta020': { src: '/reproductions/fig7_delta020_step_07000.png', label: 'CPU implicit-T final state' },
+      'paper-fig7-delta050': { src: '/reproductions/fig7_delta050_step_07000.png', label: 'CPU implicit-T final state' },
+      'paper-fig8-k080-sixfold': { src: '/reproductions/fig8_k080_step_01000.png', label: 'CPU implicit-T final state' },
+      'paper-fig8-k100-sixfold': { src: '/reproductions/fig8_k100_step_01250.png', label: 'CPU implicit-T final state' },
+      'paper-fig8-k120-sixfold': { src: '/reproductions/fig8_k120_step_01400.png', label: 'CPU implicit-T final state' },
+      'paper-fig8-k160-sixfold': { src: '/reproductions/fig8_k160_step_01800.png', label: 'CPU implicit-T final state' },
+      'paper-fig8-k200-sixfold': { src: '/reproductions/fig8_k200_step_02400.png', label: 'CPU implicit-T final state' },
+      'paper-fig9-noise010': { src: '/reproductions/fig9_noise010_step_05000.png', label: 'CPU implicit-T final state' },
+      'paper-fig9-noise001': { src: '/reproductions/fig9_noise001_step_05000.png', label: 'CPU implicit-T final state' },
+      'paper-fig9-no-noise': { src: '/reproductions/fig9_noise000_step_05000.png', label: 'CPU implicit-T final state' },
+      'paper-fig10-noise010': { src: '/reproductions/fig10_noise010_step_06500.png', label: 'CPU implicit-T final state' },
+      'paper-fig10-noise001': { src: '/reproductions/fig10_noise001_step_06500.png', label: 'CPU implicit-T final state' },
+      'paper-fig10-no-noise': { src: '/reproductions/fig10_noise000_step_06500.png', label: 'CPU implicit-T final state' },
       'paper-fig9-3d-left-target': {
         src: '/reproductions/k2002_fig9_left_ts_webgl_gold_160x160x100_k2p5_t04_poster.png',
-        label: 'simulator-generated animation poster'
+        label: 'CPU implicit-T / WebGL poster'
       },
       'paper-fig9-3d-right-target': {
         src: '/reproductions/k2002_fig9_right_ts_webgl_gold_50x50x200_k3p5_t09_poster.png',
-        label: 'simulator-generated animation poster'
+        label: 'CPU implicit-T / WebGL poster'
       }
 };
 
@@ -973,8 +1323,8 @@ function reproductionTemplate(): string {
     <article class="content-page reproduction-page">
       <div class="content-inner reproduction-inner">
         <h1>Reproductions</h1>
-        <p>This page collects simulator-generated outputs for the Kobayashi references. It does not distribute paper figures. K1993 entries are reproduced final-state thumbnails from the browser solver; K2002 entries use public WebGL animations, final-state viewers, and STL isosurfaces generated from the listed presets.</p>
-        <p class="reproduction-note">All media on this page is simulator-generated. The comparison is qualitative; exact reproduction is not claimed.</p>
+        <p>This page collects simulator-generated outputs for the Kobayashi references. It does not distribute paper figures. K1993 entries show simulator-generated final-state thumbnails, and K2002 entries use public CPU/WebGL animations, final-state viewers, and STL isosurfaces generated from the listed presets.</p>
+        <p class="reproduction-note">All media on this page is simulator-generated. CPU implicit-temperature output is the reproduction sample path; WebGPU thumbnails show the experimental explicit-temperature backend. The comparison is qualitative; exact reproduction is not claimed.</p>
         <nav class="reproduction-section-nav" aria-label="Reproduction sections">
           <a href="#k1993-reproductions">K1993</a>
           <a href="#k2002-reproductions">K2002</a>
@@ -982,7 +1332,7 @@ function reproductionTemplate(): string {
         <section class="reproduction-family" id="k2002-reproductions">
           <div class="reproduction-family-header">
             <h2>K2002 3D Reproduction</h2>
-            <p>Public animation and final-state assets generated by this simulator. The exact 3D numerical conditions were not available, so these parameters are estimates selected by qualitative comparison with the K2002 figure. Select the Lab action to load the same preset parameters for an interactive rerun.</p>
+        <p>Public animation and final-state assets generated by this simulator's CPU implicit-temperature solver and three.js/WebGL renderer. The exact 3D numerical conditions were not available, so these parameters are estimates selected by qualitative comparison with the K2002 figure. Select the Lab action to load the same preset parameters for an interactive rerun.</p>
           </div>
           <div class="k2002-media-grid">
             ${k2002ReproductionAssets.map(k2002AssetCardTemplate).join('')}
@@ -1073,6 +1423,7 @@ function reproductionGroupTemplate(group: ReproductionGroup): string {
 
 function reproductionCardTemplate(config: PhaseFieldConfig): string {
   const thumbnail = reproductionThumbnail(config.id);
+  const gpuThumbnail = webGpuReproductionThumbnail(thumbnail);
   const figureLabel = shortFigureLabel(config.paperReference?.label ?? config.name);
   const displayTitle = reproductionDisplayTitle(config);
   return `
@@ -1087,16 +1438,37 @@ function reproductionCardTemplate(config: PhaseFieldConfig): string {
         </dl>
       </div>
       <div class="reproduction-thumb">
-        <div class="reproduction-thumb-frame">
-          ${
-            thumbnail
-              ? `<img src="${thumbnail.src}" alt="${figureLabel} simulator reproduction preview" />`
-              : '<div class="reproduction-thumb-placeholder">Preview<br />pending</div>'
-          }
-        </div>
-        <div class="reproduction-thumb-label">${thumbnail?.label ?? 'run in Lab'}</div>
+        ${
+          gpuThumbnail
+            ? `<div class="reproduction-thumb-pair">
+                ${reproductionThumbItem(thumbnail, figureLabel, 'CPU implicit-T')}
+                ${reproductionThumbItem(gpuThumbnail, figureLabel, 'WebGPU explicit-T')}
+              </div>`
+            : `${reproductionThumbFrame(thumbnail, figureLabel)}<div class="reproduction-thumb-label">${thumbnail?.label ?? 'run in Lab'}</div>`
+        }
       </div>
     </button>
+  `;
+}
+
+function reproductionThumbItem(thumbnail: ReproductionThumbnail | undefined, figureLabel: string, label: string): string {
+  return `
+    <div class="reproduction-thumb-item">
+      ${reproductionThumbFrame(thumbnail, figureLabel)}
+      <div class="reproduction-thumb-label">${label}</div>
+    </div>
+  `;
+}
+
+function reproductionThumbFrame(thumbnail: ReproductionThumbnail | undefined, figureLabel: string): string {
+  return `
+    <div class="reproduction-thumb-frame">
+      ${
+        thumbnail
+          ? `<img src="${thumbnail.src}" alt="${figureLabel} ${thumbnail.label}" />`
+          : '<div class="reproduction-thumb-placeholder">Preview<br />pending</div>'
+      }
+    </div>
   `;
 }
 
@@ -1135,6 +1507,15 @@ function reproductionParameterRows(config: PhaseFieldConfig): Array<{ label: str
 
 function reproductionThumbnail(presetId: string): ReproductionThumbnail | undefined {
   return reproductionThumbnails[presetId];
+}
+
+function webGpuReproductionThumbnail(thumbnail: ReproductionThumbnail | undefined): ReproductionThumbnail | undefined {
+  if (!thumbnail?.src.startsWith('/reproductions/fig')) return undefined;
+  const src = thumbnail.src.replace('/reproductions/', '/reproductions/webgpu/');
+  return {
+    src: `${src}?v=${WEBGPU_REPRODUCTION_VERSION}`,
+    label: 'WebGPU explicit-T final state'
+  };
 }
 
 function threeDModelNotes(): string {
@@ -1187,8 +1568,18 @@ function threeDModelNotes(): string {
             <p>K2002 parameter values that were not available in the source material are marked as estimates. Future K or ${mathInline('<mi>δ</mi>', 'delta')} sweeps should be described as right-type exploratory runs, not as additional paper reproductions.</p>
           </div>
           <div class="method-card">
+            <h2>WebGPU GPGPU Step</h2>
+            <p>The WebGPU backend is an explicit stencil solver. Each compute invocation updates one grid cell from the previous ${mathInline('<mi>p</mi>', 'p')} and ${mathInline('<mi>T</mi>', 'temperature')} buffers, reads only neighboring cells, writes the next buffers, and then ping-pongs the buffers for the next step. This local, uniform work is the part of the phase-field calculation that maps cleanly to GPGPU hardware.</p>
+            <p>The CPU reproduction path solves temperature diffusion implicitly with ICCG/Jacobi iteration. That allows a larger <code>dt</code>, but it is a coupled linear solve with repeated sweeps and synchronization. The current browser WebGPU path therefore uses explicit temperature integration: smaller <code>dt</code>, but much more parallel work per wall-clock second.</p>
+          </div>
+          <div class="method-card">
+            <h2>WebGPU Display Rate</h2>
+            <p>Because the WebGPU temperature update is explicit, <code>dt</code> must stay below the stability limit set by diffusion and by latent-heat feedback. Larger <code>K</code> strengthens the <code>K Δp</code> coupling, so high-<code>K</code> runs need a smaller <code>dt</code>. The app lowers <code>dt</code> when WebGPU is selected instead of hiding this numerical difference.</p>
+            <p>WebGPU can still be faster because it advances many small steps before a visible frame is needed. A larger <code>steps/frame</code> does not change <code>dt</code>; it batches solver steps and amortizes readback plus marching-cubes work over more model time. The current K2002 3D WebGPU presets use <code>dt=5e-5</code> and <code>steps/frame=45</code>, so one visible update advances about <code>0.00225</code> model time units.</p>
+          </div>
+          <div class="method-card">
             <h2>Browser Limits</h2>
-            <p>3D stepping is CPU-bound and memory-sensitive in the browser. On the Apple M1 Max development machine, TypeScript/WebGL animation runs took about 44 minutes for the K2002 Fig.9-left <code>160 x 160 x 100</code>, 2000-step case and about 48 minutes for the K2002 Fig.9-right <code>50 x 50 x 200</code>, 4500-step case. A separate TypeScript solver probe measured about <code>1.04 s/step</code> for a <code>100 x 100 x 300</code> right-type target, roughly 1.2 hours for 4000 steps before rendering overhead. Treat these as Apple Silicon M1-class reference timings, not a dedicated Safari benchmark.</p>
+            <p>Published 3D reproduction media were generated with the CPU implicit-temperature solver. On the Apple M1 Max development machine, TypeScript/WebGL animation runs took about 44 minutes for the K2002 Fig.9-left <code>160 x 160 x 100</code>, 2000-step case and about 48 minutes for the K2002 Fig.9-right <code>50 x 50 x 200</code>, 4500-step case. Lab also includes an experimental 3D WebGPU backend for faster exploratory stepping, but it uses explicit temperature integration and is not the public reproduction sample path.</p>
           </div>
         </section>
 
@@ -1519,6 +1910,10 @@ function modelTemplate(): string {
         <p>In 2D, the app uses ${epsilon2DMath()} ${cite('K1993')}. The anisotropic diffusion term is discretized with the half-grid flux form described in K2002, building ${mathInline('<msub><mi>p</mi><mrow><mi>i</mi><mo>+</mo><mfrac><mn>1</mn><mn>2</mn></mfrac><mo>,</mo><mi>j</mi></mrow></msub>', 'p at i plus one half j')} and ${mathInline('<msub><mi>q</mi><mrow><mi>i</mi><mo>,</mo><mi>j</mi><mo>+</mo><mfrac><mn>1</mn><mn>2</mn></mfrac></mrow></msub>', 'q at i j plus one half')} before taking their divergence ${cite('K2002')}. With ${mathInline('<mrow><mi>j</mi><mo>=</mo><mn>4</mn></mrow>', 'j equals four')} and ${mathInline('<mrow><msub><mi>θ</mi><mn>0</mn></msub><mo>=</mo><mn>0</mn></mrow>', 'theta zero equals zero')}, the horizontal and vertical axes are preferred growth directions.</p>
         <p>Paper-target K1993 presets use the reported values where available: ${mathInline('<mrow><mi mathvariant="normal">Δx</mi><mo>=</mo><mn>0.03</mn></mrow>', 'delta x equals zero point zero three')}, ${mathInline('<mrow><mi mathvariant="normal">Δt</mi><mo>=</mo><mn>0.0002</mn></mrow>', 'delta t equals zero point zero zero zero two')}, ${mathInline('<mrow><mover><mi>ε</mi><mo>¯</mo></mover><mo>=</mo><mn>0.01</mn></mrow>', 'epsilon bar equals zero point zero one')}, ${mathInline('<mrow><mi>τ</mi><mo>=</mo><mn>0.0003</mn></mrow>', 'tau equals zero point zero zero zero three')}, ${mathInline('<mrow><mi>α</mi><mo>=</mo><mn>0.9</mn></mrow>', 'alpha equals zero point nine')}, ${mathInline('<mrow><mi>γ</mi><mo>=</mo><mn>10.0</mn></mrow>', 'gamma equals ten')}, plus the figure-specific ${mathInline('<mi>δ</mi>', 'delta')}, ${mathInline('<mi>K</mi>', 'K')}, ${mathInline('<mi>j</mi>', 'j')}, and boundary setup ${cite('K1993')}. Bottom nuclei are initialized as smooth tanh-profile half-disks rather than hard binary disks. The 2D solver advances ${mathInline('<mi>p</mi>', 'p')} explicitly, then solves ${implicitTemperatureMath()} with ICCG for Neumann boundaries and Jacobi iteration for fixed-temperature boundaries.</p>
         <p>Noise is applied on the ${mathInline('<mfrac><mrow><mo>∂</mo><mi>p</mi></mrow><mrow><mo>∂</mo><mi>t</mi></mrow></mfrac>', 'partial p over partial time')} side, corresponding to interface-velocity fluctuation ${cite('K1993')}. It is localized by ${mathInline('<mrow><mi>p</mi><mo stretchy="false">(</mo><mn>1</mn><mo>-</mo><mi>p</mi><mo stretchy="false">)</mo></mrow>', 'p times one minus p')}, so it acts near the diffuse interface rather than directly in the bulk liquid or bulk solid. Fig.7 uses the paper-default independent noise amplitude ${mathInline('<mrow><mi>a</mi><mo>=</mo><mn>0.010</mn></mrow>', 'a equals zero point zero one zero')}, while Fig.10 compares ${mathInline('<mrow><mi>a</mi><mo>=</mo><mn>0</mn></mrow>', 'a equals zero')}, ${mathInline('<mrow><mi>a</mi><mo>=</mo><mn>0.001</mn></mrow>', 'a equals zero point zero zero one')}, and ${mathInline('<mrow><mi>a</mi><mo>=</mo><mn>0.010</mn></mrow>', 'a equals zero point zero one zero')}.</p>
+        <h2>WebGPU / GPGPU path</h2>
+        <p>The Lab defaults to the experimental 2D WebGPU backend when WebGPU is available, and 3D presets can opt into the same experimental path. WebGPU is used as a GPGPU stencil engine: one compute-shader invocation updates one grid cell from the previous ${mathInline('<mi>p</mi>', 'p')} and ${mathInline('<mi>T</mi>', 'temperature')} buffers, reads only a small local neighborhood, writes the next buffers, and then swaps buffers for the following step. This explicit local update is well matched to GPU hardware because many grid cells can be advanced in parallel with the same kernel.</p>
+        <p>The CPU reproduction-oriented solver advances ${mathInline('<mi>p</mi>', 'p')} explicitly but solves ${mathInline('<mi>T</mi>', 'temperature')} diffusion implicitly. That implicit solve permits a larger <code>dt</code>, but it is a coupled linear-system solve with repeated ICCG/Jacobi sweeps and synchronization. The current browser WebGPU backend therefore uses explicit temperature integration instead. It needs a smaller <code>dt</code>, but the per-step work is massively parallel and can still be faster for interactive exploration.</p>
+        <p>When a preset is loaded with WebGPU selected, the app lowers <code>dt</code> to the explicit-temperature stability estimate and increases <code>steps/frame</code> to keep the displayed physical-time advance practical. Because the explicit ${mathInline('<mi>T</mi>', 'temperature')} update contains diffusion and the latent-heat term <code>K Δp</code>, larger <code>K</code> requires a smaller <code>dt</code>. Before dispatching the compute shader, the app pre-scales the noise amplitude by <code>sqrt(reference dt / dt)</code>, because the independent interface noise is sampled once per time step. Use WebGPU for interactive exploration, not for paper-target reproduction claims or public sample images.</p>
         <h2>Boundary conditions</h2>
         <p>${mathInline('<mi>p</mi>', 'p')} always uses no-flux / Neumann boundaries, following the zero-flux phase-field boundary described for K1993. ${mathInline('<mi>T</mi>', 'temperature')} can use adiabatic / no-flux, fixed-temperature edges, or a fixed-temperature left wall depending on the preset. Fig.7, Fig.8, Fig.9, and Fig.10 paper-target presets use the supercooled-melt adiabatic boundary setup.</p>
         ${threeDModelNotes()}
