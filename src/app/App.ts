@@ -28,13 +28,14 @@ const APP_LINKS = {
 
 const DEFAULT_LAB_PRESET_ID = 'paper-fig8-k200-sixfold';
 const DEFAULT_2D_SOLVER_BACKEND: SolverBackend = 'webgpu-experimental';
+const DEFAULT_3D_SOLVER_BACKEND: SolverBackend = 'webgpu-experimental';
 const WEBGPU_DT_QUANTUM = 0.000025;
 const WEBGPU_MAX_DT = 0.0001;
 const WEBGPU_3D_MAX_DT = 0.00005;
 const WEBGPU_HIGH_K_MAX_DT = 0.00005;
 const WEBGPU_STABILITY_SAFETY = 0.8;
 const WEBGPU_MAX_STEPS_PER_FRAME = 120;
-const WEBGPU_3D_MAX_STEPS_PER_FRAME = 64;
+const WEBGPU_3D_MAX_STEPS_PER_FRAME = 1000;
 const WEBGPU_3D_TARGET_TIME_PER_FRAME = 0.00225;
 const WEBGPU_REPRODUCTION_VERSION = 'dt50-matched-20260619';
 
@@ -42,27 +43,42 @@ function labConfigForPreset(presetId: string): PhaseFieldConfig {
   const config = clonePreset(presetId);
   if (config.dimension === '2d') {
     config.solverBackend = DEFAULT_2D_SOLVER_BACKEND;
-    if (config.solverBackend === 'webgpu-experimental') applyWebGpuNumerics(config);
+    if (config.solverBackend === 'webgpu-experimental') applyWebGpuNumerics(config, { forcePresetSteps: true });
   } else {
-    config.solverBackend = 'cpu';
+    config.solverBackend = DEFAULT_3D_SOLVER_BACKEND;
     config.surfaceFrameGuarantee3D ??= true;
+    if (config.solverBackend === 'webgpu-experimental') applyWebGpuNumerics(config, { forcePresetSteps: true });
   }
   return config;
 }
 
-function applyWebGpuNumerics(config: PhaseFieldConfig): void {
+function applyWebGpuNumerics(config: PhaseFieldConfig, options: { forcePresetSteps?: boolean } = {}): void {
   config.noiseReferenceDt ??= config.dt;
-  const targetFrameTime =
-    config.dimension === '3d'
-      ? Math.max(config.dt * config.stepsPerFrame, WEBGPU_3D_TARGET_TIME_PER_FRAME)
-      : Math.max(config.dt * config.stepsPerFrame, config.dt);
-  const maxStepsPerFrame = config.dimension === '3d' ? WEBGPU_3D_MAX_STEPS_PER_FRAME : WEBGPU_MAX_STEPS_PER_FRAME;
   const recommendedDt = recommendedWebGpuDt(config);
   if (config.dt > recommendedDt) config.dt = recommendedDt;
+
+  if (config.dimension === '3d') {
+    const defaultSteps = webGpu3DDefaultStepsPerFrame(config);
+    const nextSteps = options.forcePresetSteps ? defaultSteps : Math.max(config.stepsPerFrame, defaultSteps);
+    config.stepsPerFrame = clampInteger(nextSteps, 1, WEBGPU_3D_MAX_STEPS_PER_FRAME);
+    return;
+  }
+
+  const targetFrameTime = Math.max(config.dt * config.stepsPerFrame, config.dt);
   config.stepsPerFrame = Math.max(
     1,
-    Math.min(maxStepsPerFrame, Math.max(config.stepsPerFrame, Math.round(targetFrameTime / config.dt)))
+    Math.min(WEBGPU_MAX_STEPS_PER_FRAME, Math.max(config.stepsPerFrame, Math.round(targetFrameTime / config.dt)))
   );
+}
+
+function webGpu3DDefaultStepsPerFrame(config: PhaseFieldConfig): number {
+  if (config.id === 'paper-fig9-3d-left-target') return 500;
+  if (config.id === 'paper-fig9-3d-right-target') return 1000;
+  return Math.max(config.stepsPerFrame, Math.round(WEBGPU_3D_TARGET_TIME_PER_FRAME / config.dt));
+}
+
+function clampInteger(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, Math.round(value)));
 }
 
 function recommendedWebGpuDt(config: PhaseFieldConfig): number {
@@ -1162,7 +1178,7 @@ function webGpuStatusText(config: PhaseFieldConfig): string {
 function explicitTStabilityText(config: PhaseFieldConfig): string {
   const currentLimit = explicitTStabilityLimit(config, config.dimension === '3d' ? 3 : 2);
   const k2002Limit = explicitTStabilityLimit({ ...config, latentHeat: 3.5, dx: 0.03, temperatureDiffusivity: 1, tau: 0.0003 }, 3);
-  return `Explicit T estimate: current dtmax≈${compactNumber(currentLimit)}, K=3.5 3D dtmax≈${compactNumber(k2002Limit)}; 3D WebGPU presets use dt≈0.00005 for a common animation scale.`;
+  return `Explicit T estimate: current dtmax≈${compactNumber(currentLimit)}, K=3.5 3D dtmax≈${compactNumber(k2002Limit)}; 3D WebGPU uses dt≈0.00005 and large steps/frame for throughput.`;
 }
 
 function explicitTStabilityLimit(config: PhaseFieldConfig, dimensions: 2 | 3): number {
@@ -1642,7 +1658,7 @@ function threeDModelNotes(): string {
           <div class="method-card">
             <h2>WebGPU Display Rate</h2>
             <p>Because the WebGPU temperature update is explicit, <code>dt</code> must stay below the stability limit set by diffusion and by latent-heat feedback. Larger <code>K</code> strengthens the <code>K Δp</code> coupling, so high-<code>K</code> runs need a smaller <code>dt</code>. The app lowers <code>dt</code> when WebGPU is selected instead of hiding this numerical difference.</p>
-            <p>WebGPU can still be faster because it advances many small steps before a visible frame is needed. A larger <code>steps/frame</code> does not change <code>dt</code>; it batches solver steps and amortizes readback plus marching-cubes work over more model time. The current K2002 3D WebGPU presets use <code>dt=5e-5</code> and <code>steps/frame=45</code>, so one visible update advances about <code>0.00225</code> model time units.</p>
+            <p>WebGPU can still be faster because it advances many small steps before a visible frame is needed. A larger <code>steps/frame</code> does not change <code>dt</code>; it batches solver steps and amortizes readback plus marching-cubes work over more model time. The K2002 3D WebGPU defaults use <code>dt=5e-5</code>, with <code>steps/frame=500</code> for Fig.9-left and <code>steps/frame=1000</code> for Fig.9-right.</p>
           </div>
           <div class="method-card">
             <h2>Browser Limits</h2>
@@ -1978,7 +1994,7 @@ function modelTemplate(): string {
         <p>Paper-target K1993 presets use the reported values where available: ${mathInline('<mrow><mi mathvariant="normal">Δx</mi><mo>=</mo><mn>0.03</mn></mrow>', 'delta x equals zero point zero three')}, ${mathInline('<mrow><mi mathvariant="normal">Δt</mi><mo>=</mo><mn>0.0002</mn></mrow>', 'delta t equals zero point zero zero zero two')}, ${mathInline('<mrow><mover><mi>ε</mi><mo>¯</mo></mover><mo>=</mo><mn>0.01</mn></mrow>', 'epsilon bar equals zero point zero one')}, ${mathInline('<mrow><mi>τ</mi><mo>=</mo><mn>0.0003</mn></mrow>', 'tau equals zero point zero zero zero three')}, ${mathInline('<mrow><mi>α</mi><mo>=</mo><mn>0.9</mn></mrow>', 'alpha equals zero point nine')}, ${mathInline('<mrow><mi>γ</mi><mo>=</mo><mn>10.0</mn></mrow>', 'gamma equals ten')}, plus the figure-specific ${mathInline('<mi>δ</mi>', 'delta')}, ${mathInline('<mi>K</mi>', 'K')}, ${mathInline('<mi>j</mi>', 'j')}, and boundary setup ${cite('K1993')}. Bottom nuclei are initialized as smooth tanh-profile half-disks rather than hard binary disks. The 2D solver advances ${mathInline('<mi>p</mi>', 'p')} explicitly, then solves ${implicitTemperatureMath()} with ICCG for Neumann boundaries and Jacobi iteration for fixed-temperature boundaries.</p>
         <p>Noise is applied on the ${mathInline('<mfrac><mrow><mo>∂</mo><mi>p</mi></mrow><mrow><mo>∂</mo><mi>t</mi></mrow></mfrac>', 'partial p over partial time')} side, corresponding to interface-velocity fluctuation ${cite('K1993')}. It is localized by ${mathInline('<mrow><mi>p</mi><mo stretchy="false">(</mo><mn>1</mn><mo>-</mo><mi>p</mi><mo stretchy="false">)</mo></mrow>', 'p times one minus p')}, so it acts near the diffuse interface rather than directly in the bulk liquid or bulk solid. Fig.7 uses the paper-default independent noise amplitude ${mathInline('<mrow><mi>a</mi><mo>=</mo><mn>0.010</mn></mrow>', 'a equals zero point zero one zero')}, while Fig.10 compares ${mathInline('<mrow><mi>a</mi><mo>=</mo><mn>0</mn></mrow>', 'a equals zero')}, ${mathInline('<mrow><mi>a</mi><mo>=</mo><mn>0.001</mn></mrow>', 'a equals zero point zero zero one')}, and ${mathInline('<mrow><mi>a</mi><mo>=</mo><mn>0.010</mn></mrow>', 'a equals zero point zero one zero')}.</p>
         <h2>WebGPU / GPGPU path</h2>
-        <p>The Lab defaults to the experimental 2D WebGPU backend when WebGPU is available, and 3D presets can opt into the same experimental path. WebGPU is used as a GPGPU stencil engine: one compute-shader invocation updates one grid cell from the previous ${mathInline('<mi>p</mi>', 'p')} and ${mathInline('<mi>T</mi>', 'temperature')} buffers, reads only a small local neighborhood, writes the next buffers, and then swaps buffers for the following step. This explicit local update is well matched to GPU hardware because many grid cells can be advanced in parallel with the same kernel.</p>
+        <p>The Lab defaults to the experimental WebGPU backend for both 2D and 3D when WebGPU is available. WebGPU is used as a GPGPU stencil engine: one compute-shader invocation updates one grid cell from the previous ${mathInline('<mi>p</mi>', 'p')} and ${mathInline('<mi>T</mi>', 'temperature')} buffers, reads only a small local neighborhood, writes the next buffers, and then swaps buffers for the following step. This explicit local update is well matched to GPU hardware because many grid cells can be advanced in parallel with the same kernel.</p>
         <p>The CPU reproduction-oriented solver advances ${mathInline('<mi>p</mi>', 'p')} explicitly but solves ${mathInline('<mi>T</mi>', 'temperature')} diffusion implicitly. That implicit solve permits a larger <code>dt</code>, but it is a coupled linear-system solve with repeated ICCG/Jacobi sweeps and synchronization. The current browser WebGPU backend therefore uses explicit temperature integration instead. It needs a smaller <code>dt</code>, but the per-step work is massively parallel and can still be faster for interactive exploration.</p>
         <p>When a preset is loaded with WebGPU selected, the app lowers <code>dt</code> to the explicit-temperature stability estimate and increases <code>steps/frame</code> to keep the displayed physical-time advance practical. Because the explicit ${mathInline('<mi>T</mi>', 'temperature')} update contains diffusion and the latent-heat term <code>K Δp</code>, larger <code>K</code> requires a smaller <code>dt</code>. Before dispatching the compute shader, the app pre-scales the noise amplitude by <code>sqrt(reference dt / dt)</code>, because the independent interface noise is sampled once per time step. Use WebGPU for interactive exploration, not for paper-target reproduction claims or public sample images.</p>
         <h2>Boundary conditions</h2>
