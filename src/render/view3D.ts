@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { createXYMirrorGrid, createXYMirroredSnapshot, shouldMirrorXY } from '../simulation/mirrorGrid';
 import type { PhaseFieldConfig, SimulationSnapshot, ViewMode } from '../simulation/types';
-import { buildIsosurfaceGeometry } from './marchingCubes';
+import type { IsosurfaceBuildResponse } from './isosurfaceWorker';
+import { IsosurfaceWorkerClient } from './isosurfaceWorkerClient';
 import { createVolumeRaycaster } from './volumeRaycaster';
 import { createSliceStack, type SliceAxis, type SliceStack } from './volumeRenderer';
 
@@ -14,22 +15,31 @@ export class View3D {
   private boxKey = '';
   private updateIndex = 0;
   private orientationKey = '';
+  private isosurfaceWorker: IsosurfaceWorkerClient | null = null;
+  private surfaceBuildInFlight = false;
+  private pendingSurfaceJob: SurfaceBuildJob | null = null;
+  private surfaceEpoch = 0;
+  private lastSurfaceQueueWallTime = 0;
+  private lastSurfaceQueuedStep = -1;
+  private surfaceWaiters: Array<() => void> = [];
+  private disposed = false;
 
-  constructor() {
+  constructor(private readonly requestRender: () => void = () => {}) {
     this.contentGroup.rotation.x = 0;
     this.contentGroup.rotation.y = 0;
     this.group.add(this.contentGroup);
   }
 
-  update(snapshot: SimulationSnapshot, config: PhaseFieldConfig, force = false): void {
+  update(snapshot: SimulationSnapshot, config: PhaseFieldConfig, force = false): Promise<void> | undefined {
     this.updateIndex += 1;
     this.applyContentOrientation(config);
     const interval = config.renderMode3D === 'surface' ? 5 : 8;
-    if (!force && this.updateIndex % interval !== 0) return;
+    if (!force && this.updateIndex % interval !== 0 && !config.surfaceFrameGuarantee3D) return undefined;
 
     if (config.renderMode3D === 'surface') {
       this.clearSlices();
-      this.updateSurface(snapshot, config);
+      if (force) this.cancelSurfaceBuilds();
+      return this.updateSurface(snapshot, config, force);
     } else {
       this.clearSurface();
       const displaySnapshot = createXYMirroredSnapshot(snapshot, config);
@@ -39,31 +49,119 @@ export class View3D {
       } else {
         this.updateSlices(displaySnapshot, config.viewMode, sliceAxisForConfig(config));
       }
+      return undefined;
     }
   }
 
   dispose(): void {
+    this.disposed = true;
+    this.surfaceEpoch += 1;
+    this.pendingSurfaceJob = null;
+    this.isosurfaceWorker?.dispose();
+    this.isosurfaceWorker = null;
+    this.resolveSurfaceWaiters();
     this.clearSurface();
     this.clearSlices();
     this.clearBox();
   }
 
-  private updateSurface(snapshot: SimulationSnapshot, config: PhaseFieldConfig): void {
-    this.clearSurface();
+  private updateSurface(snapshot: SimulationSnapshot, config: PhaseFieldConfig, force: boolean): Promise<void> | undefined {
+    const guarantee = config.surfaceFrameGuarantee3D === true && !force;
+    const waitForSurface = guarantee ? this.waitForNextSurface() : undefined;
     const grid = createXYMirrorGrid(snapshot, config, shouldMirrorXY(config));
     this.ensureBox(grid.nx, grid.ny, grid.nz);
     const targetCells = config.surfaceStyle3D === 'gold' ? 240 : 72;
     const stride = Math.max(1, Math.ceil(Math.max(grid.nx, grid.ny, grid.nz) / targetCells));
-    const geometry = buildIsosurfaceGeometry(
-      snapshot.phi,
-      snapshot.temperature,
-      grid.nx,
-      grid.ny,
-      grid.nz,
-      0.5,
-      stride,
-      { mapIndex: grid.mapIndex }
-    );
+    if (this.surfaceBuildInFlight && !this.shouldQueuePendingSurface(snapshot, force, guarantee)) return waitForSurface;
+
+    const job = this.createSurfaceBuildJob(snapshot, config, grid, stride);
+    const previewStride = Math.max(stride, Math.ceil(Math.max(grid.nx, grid.ny, grid.nz) / 72));
+    const previewJob =
+      !this.surface && previewStride > stride
+        ? this.createSurfaceBuildJob(snapshot, config, grid, previewStride)
+        : null;
+
+    if (this.surfaceBuildInFlight) {
+      this.pendingSurfaceJob = previewJob ?? job;
+      return waitForSurface;
+    }
+    if (previewJob) this.pendingSurfaceJob = job;
+    void this.startSurfaceBuild(previewJob ?? job);
+    return waitForSurface;
+  }
+
+  private async startSurfaceBuild(job: SurfaceBuildJob): Promise<void> {
+    this.surfaceBuildInFlight = true;
+    try {
+      const data = await this.ensureIsosurfaceWorker().build(job.input);
+      if (!this.disposed && job.epoch === this.surfaceEpoch) {
+        this.replaceSurface(data, job.config);
+        this.requestRender();
+      }
+    } catch (error) {
+      if (!this.disposed) console.warn('Isosurface worker failed.', error);
+      this.resolveSurfaceWaiters();
+    } finally {
+      this.surfaceBuildInFlight = false;
+      const pending = this.pendingSurfaceJob;
+      this.pendingSurfaceJob = null;
+      if (pending && !this.disposed) void this.startSurfaceBuild(pending);
+    }
+  }
+
+  private createSurfaceBuildJob(
+    snapshot: SimulationSnapshot,
+    config: PhaseFieldConfig,
+    grid: ReturnType<typeof createXYMirrorGrid>,
+    stride: number
+  ): SurfaceBuildJob {
+    this.lastSurfaceQueueWallTime = performance.now();
+    this.lastSurfaceQueuedStep = snapshot.step;
+    return {
+      epoch: this.surfaceEpoch,
+      config,
+      input: {
+        phi: new Float32Array(snapshot.phi),
+        temperature: new Float32Array(snapshot.temperature),
+        sourceNx: snapshot.nx,
+        sourceNy: snapshot.ny,
+        sourceNz: snapshot.nz,
+        displayNx: grid.nx,
+        displayNy: grid.ny,
+        displayNz: grid.nz,
+        mirrorXY: grid.mirrorXY,
+        halfCellMirror: config.nucleusPlacement === 'bottom-corner-halfcell',
+        iso: 0.5,
+        stride
+      }
+    };
+  }
+
+  private shouldQueuePendingSurface(snapshot: SimulationSnapshot, force: boolean, guarantee: boolean): boolean {
+    if (guarantee || force || !this.pendingSurfaceJob) return true;
+    if (snapshot.step === this.lastSurfaceQueuedStep) return false;
+    return performance.now() - this.lastSurfaceQueueWallTime > 250;
+  }
+
+  private cancelSurfaceBuilds(): void {
+    this.surfaceEpoch += 1;
+    this.pendingSurfaceJob = null;
+    this.lastSurfaceQueueWallTime = 0;
+    this.lastSurfaceQueuedStep = -1;
+  }
+
+  private ensureIsosurfaceWorker(): IsosurfaceWorkerClient {
+    this.isosurfaceWorker ??= new IsosurfaceWorkerClient();
+    return this.isosurfaceWorker;
+  }
+
+  private replaceSurface(data: IsosurfaceBuildResponse, config: PhaseFieldConfig): void {
+    this.removeSurface();
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.BufferAttribute(data.positions, 3));
+    geometry.setAttribute('normal', new THREE.BufferAttribute(data.normals, 3));
+    geometry.setAttribute('color', new THREE.BufferAttribute(data.colors, 3));
+    geometry.computeBoundingSphere();
     const material =
       config.surfaceStyle3D === 'gold'
         ? new THREE.MeshStandardMaterial({
@@ -82,6 +180,7 @@ export class View3D {
           });
     this.surface = new THREE.Mesh(geometry, material);
     this.contentGroup.add(this.surface);
+    this.resolveSurfaceWaiters();
   }
 
   private updateSlices(snapshot: SimulationSnapshot, viewMode: ViewMode, axis: SliceAxis): void {
@@ -111,6 +210,25 @@ export class View3D {
   }
 
   private clearSurface(): void {
+    this.surfaceEpoch += 1;
+    this.pendingSurfaceJob = null;
+    this.resolveSurfaceWaiters();
+    this.removeSurface();
+  }
+
+  private waitForNextSurface(): Promise<void> {
+    return new Promise((resolve) => {
+      this.surfaceWaiters.push(resolve);
+    });
+  }
+
+  private resolveSurfaceWaiters(): void {
+    const waiters = this.surfaceWaiters;
+    this.surfaceWaiters = [];
+    for (const resolve of waiters) resolve();
+  }
+
+  private removeSurface(): void {
     if (!this.surface) return;
     this.contentGroup.remove(this.surface);
     this.surface.geometry.dispose();
@@ -218,4 +336,10 @@ function createBox(width: number, height: number, depth: number): THREE.LineSegm
     opacity: 0.32
   });
   return new THREE.LineSegments(geometry, material);
+}
+
+interface SurfaceBuildJob {
+  epoch: number;
+  config: PhaseFieldConfig;
+  input: Parameters<IsosurfaceWorkerClient['build']>[0];
 }

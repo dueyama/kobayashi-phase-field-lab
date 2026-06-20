@@ -3,6 +3,7 @@ import { PhaseField2D } from '../simulation/phaseField2D';
 import { PhaseField2DWebGpu, webGpuAvailability } from '../simulation/phaseField2DWebGpu';
 import { PhaseField3D } from '../simulation/phaseField3D';
 import { PhaseField3DWebGpu } from '../simulation/phaseField3DWebGpu';
+import { PhaseField3DWorkerProxy } from '../simulation/phaseField3DWorkerProxy';
 import { clonePreset, labPresets, presets } from '../simulation/presets';
 import { createStateExportBlob, parseStateExportArrayBuffer } from '../simulation/stateExport';
 import { createIsosurfaceStlBlob } from '../simulation/stlExport';
@@ -17,7 +18,7 @@ import type {
   ViewMode
 } from '../simulation/types';
 
-type Solver = PhaseField2D | PhaseField2DWebGpu | PhaseField3D | PhaseField3DWebGpu;
+type Solver = PhaseField2D | PhaseField2DWebGpu | PhaseField3D | PhaseField3DWebGpu | PhaseField3DWorkerProxy;
 type Page = 'lab' | 'reproduction' | 'model' | 'references';
 
 const APP_LINKS = {
@@ -44,6 +45,7 @@ function labConfigForPreset(presetId: string): PhaseFieldConfig {
     if (config.solverBackend === 'webgpu-experimental') applyWebGpuNumerics(config);
   } else {
     config.solverBackend = 'cpu';
+    config.surfaceFrameGuarantee3D ??= true;
   }
   return config;
 }
@@ -130,14 +132,27 @@ export class PhaseFieldApp {
     this.lastFrame = time;
 
     if (!this.unstable) {
-      const stats = await this.stepSolver(this.config.stepsPerFrame);
+      let stats: StepStats;
+      try {
+        stats = await this.stepSolver(this.config.stepsPerFrame);
+      } catch (error: unknown) {
+        if (!this.running) return;
+        this.running = false;
+        this.solverStatus = error instanceof Error ? `Solver stopped: ${error.message}` : `Solver stopped: ${String(error)}`;
+        this.showLab();
+        return;
+      }
       if (!this.running || this.page !== 'lab') return;
       this.unstable = stats.unstable;
     }
 
     const snapshot = this.solver.snapshot();
-    this.renderer?.render(snapshot, this.config);
+    const renderPromise = this.renderer?.render(snapshot, this.config);
     this.updateTelemetry(snapshot);
+    if (this.shouldWaitForSurfaceFrame(renderPromise)) {
+      await renderPromise;
+      if (!this.running || this.page !== 'lab') return;
+    }
 
     if (this.running && !this.unstable) {
       this.animationFrameId = requestAnimationFrame((next) => void this.tick(next));
@@ -163,8 +178,17 @@ export class PhaseFieldApp {
 
   private renderCurrentState(force = true): void {
     const snapshot = this.solver.snapshot();
-    this.renderer?.render(snapshot, this.config, force);
+    void this.renderer?.render(snapshot, this.config, force);
     this.updateTelemetry(snapshot);
+  }
+
+  private shouldWaitForSurfaceFrame(renderPromise: Promise<void> | undefined): renderPromise is Promise<void> {
+    return (
+      renderPromise !== undefined &&
+      this.config.dimension === '3d' &&
+      this.config.renderMode3D === 'surface' &&
+      this.config.surfaceFrameGuarantee3D === true
+    );
   }
 
   private bindTopNav(): void {
@@ -419,6 +443,9 @@ export class PhaseFieldApp {
       this.config.renderMode3D = value as RenderMode3D;
       this.renderCurrentState(true);
     });
+    bindCheckbox(root, 'surfaceFrameGuarantee3D', (checked) => {
+      this.config.surfaceFrameGuarantee3D = checked;
+    });
     bindSelect(root, 'boundaryCondition', (value) => {
       this.config.boundaryCondition = value as BoundaryCondition;
     });
@@ -473,7 +500,14 @@ export class PhaseFieldApp {
 
   private async stepOnce(): Promise<void> {
     if (this.stepping) return;
-    const stats = await this.stepSolver(1);
+    let stats: StepStats;
+    try {
+      stats = await this.stepSolver(1);
+    } catch (error: unknown) {
+      this.solverStatus = error instanceof Error ? `Solver stopped: ${error.message}` : `Solver stopped: ${String(error)}`;
+      this.showLab();
+      return;
+    }
     this.unstable = stats.unstable;
     this.renderCurrentState(true);
   }
@@ -498,19 +532,33 @@ export class PhaseFieldApp {
             ? 'WebGPU experimental 2D: explicit p / explicit T'
             : 'WebGPU experimental 3D: explicit p / explicit T';
       } catch (error: unknown) {
-        this.solver = this.config.dimension === '2d' ? new PhaseField2D(this.config) : new PhaseField3D(this.config);
         const message = error instanceof Error ? error.message : String(error);
-        this.solverStatus = `CPU fallback: ${message}`;
+        if (this.config.dimension === '2d') {
+          this.solver = new PhaseField2D(this.config);
+          this.solverStatus = `CPU fallback: ${message}`;
+        } else {
+          this.solver = await PhaseField3DWorkerProxy.create(this.config);
+          this.solverStatus = `CPU worker fallback: ${message}`;
+        }
       }
     } else {
-      this.solver = this.config.dimension === '2d' ? new PhaseField2D(this.config) : new PhaseField3D(this.config);
-      this.solverStatus = this.config.dimension === '2d' ? 'CPU: explicit p / implicit T' : 'CPU: 3D explicit p / implicit T';
+      if (this.config.dimension === '2d') {
+        this.solver = new PhaseField2D(this.config);
+        this.solverStatus = 'CPU: explicit p / implicit T';
+      } else {
+        this.solver = await PhaseField3DWorkerProxy.create(this.config);
+        this.solverStatus = 'CPU worker: 3D explicit p / implicit T';
+      }
     }
     if (resetUnstable) this.unstable = false;
   }
 
   private disposeSolver(): void {
-    if (this.solver instanceof PhaseField2DWebGpu || this.solver instanceof PhaseField3DWebGpu) {
+    if (
+      this.solver instanceof PhaseField2DWebGpu ||
+      this.solver instanceof PhaseField3DWebGpu ||
+      this.solver instanceof PhaseField3DWorkerProxy
+    ) {
       this.solver.dispose();
     }
   }
@@ -896,6 +944,13 @@ function labTemplate(config: PhaseFieldConfig, running: boolean, solverStatus: s
                   ${option('volume', 'Volume', config.renderMode3D)}
                 </select>
               </div>
+              <label class="toggle-row ${config.dimension === '2d' ? 'disabled' : ''}" for="surfaceFrameGuarantee3D">
+                <span>
+                  <span class="toggle-title">Surface guarantee</span>
+                  <span class="toggle-hint">Wait for one 3D surface update before the next compute frame.</span>
+                </span>
+                <input id="surfaceFrameGuarantee3D" type="checkbox" data-field="surfaceFrameGuarantee3D" ${config.surfaceFrameGuarantee3D ? 'checked' : ''} ${config.dimension === '2d' ? 'disabled' : ''}>
+              </label>
               <div class="action-row">
                 <button data-action="stl" ${config.dimension === '2d' ? 'disabled' : ''}>STL surface</button>
                 <button data-action="stl-mirror" ${config.dimension === '2d' ? 'disabled' : ''}>STL x-y mirror</button>
@@ -1991,6 +2046,12 @@ function bindRange(root: HTMLElement, field: string, onInput: (value: number) =>
 function bindSelect(root: HTMLElement, field: string, onChange: (value: string) => void): void {
   root.querySelector<HTMLSelectElement>(`[data-field="${field}"]`)?.addEventListener('change', (event) => {
     onChange((event.currentTarget as HTMLSelectElement).value);
+  });
+}
+
+function bindCheckbox(root: HTMLElement, field: string, onChange: (checked: boolean) => void): void {
+  root.querySelector<HTMLInputElement>(`[data-field="${field}"]`)?.addEventListener('change', (event) => {
+    onChange((event.currentTarget as HTMLInputElement).checked);
   });
 }
 

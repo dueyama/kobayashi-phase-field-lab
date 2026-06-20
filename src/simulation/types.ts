@@ -60,6 +60,7 @@ export interface PhaseFieldConfig {
   surfaceStyle3D?: SurfaceStyle3D;
   presentationView3D?: PresentationView3D;
   interactiveView3D?: boolean;
+  surfaceFrameGuarantee3D?: boolean;
   temperatureSolver?: TemperatureSolver;
   temperatureSolverIterations?: number;
   temperatureSolverTolerance?: number;

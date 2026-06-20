@@ -673,7 +673,7 @@ export const presets: PhaseFieldConfig[] = [
     nx: 160,
     ny: 160,
     nz: 100,
-    stepsPerFrame: 1,
+    stepsPerFrame: 10,
     nucleusRadius: 7,
     latentHeat: 2.5,
     anisotropyMode: 'isotropic',

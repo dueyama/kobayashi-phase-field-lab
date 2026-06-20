@@ -434,6 +434,45 @@ button {
   font-weight: 700;
 }
 
+.toggle-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 42px;
+  padding: 9px 10px;
+  border: 1px solid rgba(139, 213, 248, 0.16);
+  background: rgba(255, 255, 255, 0.025);
+  color: var(--muted);
+}
+
+.toggle-row.disabled {
+  opacity: 0.48;
+}
+
+.toggle-title,
+.toggle-hint {
+  display: block;
+}
+
+.toggle-title {
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.toggle-hint {
+  margin-top: 3px;
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.toggle-row input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--cyan);
+}
+
 .preset-note {
   display: grid;
   gap: 7px;

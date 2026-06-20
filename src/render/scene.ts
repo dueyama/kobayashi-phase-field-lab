@@ -11,7 +11,7 @@ export class SceneRenderer {
   private readonly camera = new THREE.PerspectiveCamera(42, 1, 0.01, 100);
   private readonly controls: OrbitControls;
   private readonly view2D = new View2D();
-  private readonly view3D = new View3D();
+  private readonly view3D: View3D;
   private readonly lights: THREE.Object3D[] = [];
   private activeDimension: '2d' | '3d' | null = null;
   private frame = 0;
@@ -29,6 +29,7 @@ export class SceneRenderer {
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.setClearColor(0x03070d, 1);
     host.appendChild(this.renderer.domElement);
+    this.view3D = new View3D(() => this.renderScene());
     this.camera.position.set(0, 0, 2.25);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
@@ -56,13 +57,14 @@ export class SceneRenderer {
     }
   }
 
-  render(snapshot: SimulationSnapshot, config: PhaseFieldConfig, force = false): void {
+  render(snapshot: SimulationSnapshot, config: PhaseFieldConfig, force = false): Promise<void> | undefined {
     this.frame += 1;
     if (this.activeDimension !== snapshot.dimension) {
       this.switchDimension(snapshot.dimension);
       force = true;
     }
 
+    let updatePromise: Promise<void> | undefined;
     if (snapshot.dimension === '2d') {
       this.controls.enabled = false;
       this.camera.position.set(0, 0, 2.0);
@@ -75,11 +77,12 @@ export class SceneRenderer {
       if (force) {
         this.apply3DCamera(snapshot, config);
       }
-      this.view3D.update(snapshot, config, force);
+      updatePromise = this.view3D.update(snapshot, config, force);
     }
 
     if (this.controls.enabled) this.controls.update();
     this.renderScene();
+    return updatePromise;
   }
 
   screenshot(): string {
