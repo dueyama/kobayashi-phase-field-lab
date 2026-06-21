@@ -786,7 +786,7 @@ function shellTemplate(page: Page): string {
       <header class="topbar">
         <div class="brand">
           <img class="brand-mark" src="/icon-192.png" alt="" aria-hidden="true" />
-          <div class="brand-title">Kobayashi Phase-Field Dendrite Lab</div>
+          <div class="brand-title">Phase-Field Dendrite Lab</div>
         </div>
         <nav class="nav-tabs" aria-label="Primary">
           ${navButton('lab', 'Lab', page)}

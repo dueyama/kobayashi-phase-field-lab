@@ -1,5 +1,5 @@
 {
-  "name": "Kobayashi Phase-Field Dendrite Lab",
+  "name": "Phase-Field Dendrite Lab",
   "short_name": "Dendrite Lab",
   "description": "A qualitative browser implementation of Ryo Kobayashi's phase-field dendrite model in 2D and 3D.",
   "icons": [

@@ -1,4 +1,4 @@
-# Kobayashi Phase-Field Dendrite Lab
+# Phase-Field Dendrite Lab
 
 A Vite + TypeScript + three.js browser implementation of Ryo Kobayashi's phase-field dendrite model, with qualitative 2D and 3D reproduction experiments.
 
