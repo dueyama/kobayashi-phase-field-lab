@@ -2,19 +2,40 @@ import * as THREE from 'three';
 
 import type { SliceStack } from './volumeRenderer';
 
+export interface VolumeFieldInput {
+  phi: Float32Array;
+  sourceNx: number;
+  sourceNy: number;
+  sourceNz: number;
+  displayNx: number;
+  displayNy: number;
+  mirrorXY: boolean;
+  halfCellMirror: boolean;
+}
+
+export interface VolumeRaycaster extends SliceStack {
+  dimensions: string;
+  updatePhi: (input: VolumeFieldInput) => void;
+}
+
 export function createVolumeRaycaster(
-  phi: Float32Array,
-  nx: number,
-  ny: number,
-  nz: number,
-  steps = Math.min(192, Math.max(96, Math.ceil(Math.max(nx, ny, nz) * 0.85)))
-): SliceStack {
+  input: VolumeFieldInput,
+  steps = Math.min(
+    192,
+    Math.max(96, Math.ceil(Math.max(input.displayNx, input.displayNy, input.sourceNz) * 0.85))
+  )
+): VolumeRaycaster {
   const group = new THREE.Group();
+  const nx = input.displayNx;
+  const ny = input.displayNy;
+  const nz = input.sourceNz;
   const scale = 1 / Math.max(nx, ny, nz);
   const width = nx * scale;
   const height = ny * scale;
   const depth = nz * scale;
-  const texture = createPhiTexture(phi, nx, ny, nz);
+  const textureData = new Uint8Array(nx * ny * nz);
+  writeVolumeTextureData(textureData, input);
+  const texture = createPhiTexture(textureData, nx, ny, nz);
   const geometry = new THREE.BoxGeometry(width, height, depth);
   const material = new THREE.ShaderMaterial({
     glslVersion: THREE.GLSL3,
@@ -108,6 +129,14 @@ export function createVolumeRaycaster(
 
   return {
     group,
+    dimensions: volumeDimensions(input),
+    updatePhi: (nextInput) => {
+      if (volumeDimensions(nextInput) !== volumeDimensions(input)) {
+        throw new Error('Volume dimensions changed; create a new volume raycaster.');
+      }
+      writeVolumeTextureData(textureData, nextInput);
+      texture.needsUpdate = true;
+    },
     dispose: () => {
       texture.dispose();
       geometry.dispose();
@@ -116,11 +145,35 @@ export function createVolumeRaycaster(
   };
 }
 
-function createPhiTexture(phi: Float32Array, nx: number, ny: number, nz: number): THREE.Data3DTexture {
-  const data = new Uint8Array(nx * ny * nz);
-  for (let i = 0; i < phi.length; i += 1) {
-    data[i] = Math.round(Math.max(0, Math.min(1, phi[i])) * 255);
+export function writeVolumeTextureData(data: Uint8Array, input: VolumeFieldInput): void {
+  const { phi, sourceNx, sourceNy, sourceNz, displayNx, displayNy, mirrorXY, halfCellMirror } = input;
+  const expectedLength = displayNx * displayNy * sourceNz;
+  if (data.length !== expectedLength) throw new Error(`Volume texture length ${data.length} != ${expectedLength}.`);
+
+  for (let z = 0; z < sourceNz; z += 1) {
+    for (let y = 0; y < displayNy; y += 1) {
+      const sourceY = sourceIndex(y, sourceNy, mirrorXY, halfCellMirror);
+      for (let x = 0; x < displayNx; x += 1) {
+        const sourceX = sourceIndex(x, sourceNx, mirrorXY, halfCellMirror);
+        const source = sourceX + sourceNx * (sourceY + sourceNy * z);
+        const target = x + displayNx * (y + displayNy * z);
+        data[target] = Math.round(Math.max(0, Math.min(1, phi[source])) * 255);
+      }
+    }
   }
+}
+
+function sourceIndex(index: number, sourceSize: number, mirrorXY: boolean, halfCellMirror: boolean): number {
+  if (!mirrorXY) return index;
+  if (halfCellMirror) return index < sourceSize ? sourceSize - 1 - index : index - sourceSize;
+  return index < sourceSize - 1 ? sourceSize - 1 - index : index - sourceSize + 1;
+}
+
+function volumeDimensions(input: VolumeFieldInput): string {
+  return `${input.displayNx}:${input.displayNy}:${input.sourceNz}`;
+}
+
+function createPhiTexture(data: Uint8Array, nx: number, ny: number, nz: number): THREE.Data3DTexture {
   const texture = new THREE.Data3DTexture(data, nx, ny, nz);
   texture.format = THREE.RedFormat;
   texture.type = THREE.UnsignedByteType;

@@ -92,4 +92,13 @@ export interface StepStats {
   maxTemperature: number;
   minTemperature: number;
   unstable: boolean;
+  rawMaxPhi?: number;
+  rawMinPhi?: number;
+  rawMaxTemperature?: number;
+  rawMinTemperature?: number;
+  clampedPhiCells?: number;
+  clampedTemperatureCells?: number;
+  temperatureSolverIterations?: number;
+  temperatureSolverResidual?: number;
+  temperatureSolverConverged?: boolean;
 }

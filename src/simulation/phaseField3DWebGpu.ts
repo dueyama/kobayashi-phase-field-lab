@@ -4,6 +4,7 @@ import type { AnisotropyMode, BoundaryCondition, PhaseFieldConfig, SimulationSna
 import { webGpuAvailability } from './phaseField2DWebGpu';
 
 const PARAM_FLOATS_3D = 28;
+const DIAGNOSTIC_U32S_3D = 3;
 const WORKGROUP_SIZE_X = 4;
 const WORKGROUP_SIZE_Y = 4;
 const WORKGROUP_SIZE_Z = 4;
@@ -22,14 +23,19 @@ export class PhaseField3DWebGpu {
   private readonly device: GPUDevice;
   private readonly pipeline: GPUComputePipeline;
   private readonly paramsBuffer: GPUBuffer;
+  private readonly diagnosticsBuffer: GPUBuffer;
   private readonly phiBuffers: [GPUBuffer, GPUBuffer];
   private readonly temperatureBuffers: [GPUBuffer, GPUBuffer];
   private readonly readPhiBuffer: GPUBuffer;
   private readonly readTemperatureBuffer: GPUBuffer;
+  private readonly readDiagnosticsBuffer: GPUBuffer;
   private readonly bindGroups: [GPUBindGroup, GPUBindGroup];
   private activeBuffer = 0;
   private stepIndex = 0;
   private elapsed = 0;
+  private clampedPhiCells = 0;
+  private clampedTemperatureCells = 0;
+  private hardInstabilityCount = 0;
   private currentStats: StepStats = {
     step: 0,
     time: 0,
@@ -58,10 +64,13 @@ export class PhaseField3DWebGpu {
         entryPoint: 'main'
       }
     });
-
     this.paramsBuffer = this.device.createBuffer({
       size: PARAM_FLOATS_3D * Float32Array.BYTES_PER_ELEMENT,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
+    });
+    this.diagnosticsBuffer = this.device.createBuffer({
+      size: DIAGNOSTIC_U32S_3D * Uint32Array.BYTES_PER_ELEMENT,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST
     });
     this.phiBuffers = [this.createFieldBuffer(byteLength), this.createFieldBuffer(byteLength)];
     this.temperatureBuffers = [this.createFieldBuffer(byteLength), this.createFieldBuffer(byteLength)];
@@ -71,6 +80,10 @@ export class PhaseField3DWebGpu {
     });
     this.readTemperatureBuffer = this.device.createBuffer({
       size: byteLength,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
+    });
+    this.readDiagnosticsBuffer = this.device.createBuffer({
+      size: DIAGNOSTIC_U32S_3D * Uint32Array.BYTES_PER_ELEMENT,
       usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
     });
     this.bindGroups = [
@@ -98,14 +111,22 @@ export class PhaseField3DWebGpu {
     this.temperature.set(snapshot.temperature);
     this.device.queue.writeBuffer(this.phiBuffers[0], 0, this.phi);
     this.device.queue.writeBuffer(this.temperatureBuffers[0], 0, this.temperature);
+    this.device.queue.writeBuffer(this.diagnosticsBuffer, 0, new Uint32Array(DIAGNOSTIC_U32S_3D));
     this.activeBuffer = 0;
     this.stepIndex = 0;
     this.elapsed = 0;
+    this.clampedPhiCells = 0;
+    this.clampedTemperatureCells = 0;
+    this.hardInstabilityCount = 0;
     this.currentStats = this.calculateStats();
   }
 
   async step(count = 1): Promise<StepStats> {
-    for (let i = 0; i < count; i += 1) {
+    const stepCount = Math.max(0, Math.round(count));
+    if (stepCount === 0) return this.currentStats;
+
+    this.device.queue.writeBuffer(this.diagnosticsBuffer, 0, new Uint32Array(DIAGNOSTIC_U32S_3D));
+    for (let i = 0; i < stepCount; i += 1) {
       this.writeParams();
       const outputBuffer = this.activeBuffer === 0 ? 1 : 0;
       const encoder = this.device.createCommandEncoder();
@@ -124,7 +145,10 @@ export class PhaseField3DWebGpu {
       this.elapsed += this.config.dt;
     }
     await this.device.queue.onSubmittedWorkDone();
-    await this.readBackFields();
+    const encoder = this.device.createCommandEncoder();
+    this.encodeReadBack(encoder);
+    this.device.queue.submit([encoder.finish()]);
+    await this.mapReadBack();
     this.currentStats = this.calculateStats();
     return this.currentStats;
   }
@@ -148,10 +172,12 @@ export class PhaseField3DWebGpu {
 
   dispose(): void {
     this.paramsBuffer.destroy();
+    this.diagnosticsBuffer.destroy();
     for (const buffer of this.phiBuffers) buffer.destroy();
     for (const buffer of this.temperatureBuffers) buffer.destroy();
     this.readPhiBuffer.destroy();
     this.readTemperatureBuffer.destroy();
+    this.readDiagnosticsBuffer.destroy();
     this.device.destroy();
   }
 
@@ -175,7 +201,8 @@ export class PhaseField3DWebGpu {
         { binding: 1, resource: { buffer: temperatureIn } },
         { binding: 2, resource: { buffer: phiOut } },
         { binding: 3, resource: { buffer: temperatureOut } },
-        { binding: 4, resource: { buffer: this.paramsBuffer } }
+        { binding: 4, resource: { buffer: this.paramsBuffer } },
+        { binding: 5, resource: { buffer: this.diagnosticsBuffer } }
       ]
     });
   }
@@ -206,22 +233,36 @@ export class PhaseField3DWebGpu {
     this.device.queue.writeBuffer(this.paramsBuffer, 0, params);
   }
 
-  private async readBackFields(): Promise<void> {
+  private encodeReadBack(encoder: GPUCommandEncoder): void {
     const sourcePhi = this.phiBuffers[this.activeBuffer];
     const sourceTemperature = this.temperatureBuffers[this.activeBuffer];
     const byteLength = this.phi.byteLength;
-    const encoder = this.device.createCommandEncoder();
     encoder.copyBufferToBuffer(sourcePhi, 0, this.readPhiBuffer, 0, byteLength);
     encoder.copyBufferToBuffer(sourceTemperature, 0, this.readTemperatureBuffer, 0, byteLength);
-    this.device.queue.submit([encoder.finish()]);
+    encoder.copyBufferToBuffer(
+      this.diagnosticsBuffer,
+      0,
+      this.readDiagnosticsBuffer,
+      0,
+      DIAGNOSTIC_U32S_3D * Uint32Array.BYTES_PER_ELEMENT
+    );
+  }
+
+  private async mapReadBack(): Promise<void> {
     await Promise.all([
       this.readPhiBuffer.mapAsync(GPUMapMode.READ),
-      this.readTemperatureBuffer.mapAsync(GPUMapMode.READ)
+      this.readTemperatureBuffer.mapAsync(GPUMapMode.READ),
+      this.readDiagnosticsBuffer.mapAsync(GPUMapMode.READ)
     ]);
     this.phi.set(new Float32Array(this.readPhiBuffer.getMappedRange()));
     this.temperature.set(new Float32Array(this.readTemperatureBuffer.getMappedRange()));
+    const diagnostics = new Uint32Array(this.readDiagnosticsBuffer.getMappedRange());
+    this.clampedPhiCells = diagnostics[0] ?? 0;
+    this.clampedTemperatureCells = diagnostics[1] ?? 0;
+    this.hardInstabilityCount = diagnostics[2] ?? 0;
     this.readPhiBuffer.unmap();
     this.readTemperatureBuffer.unmap();
+    this.readDiagnosticsBuffer.unmap();
   }
 
   private calculateStats(): StepStats {
@@ -234,7 +275,8 @@ export class PhaseField3DWebGpu {
       !Number.isFinite(tempRange.max) ||
       phiRange.min < -0.5 ||
       phiRange.max > 1.5 ||
-      Math.max(Math.abs(tempRange.min), Math.abs(tempRange.max)) > 10;
+      Math.max(Math.abs(tempRange.min), Math.abs(tempRange.max)) > 10 ||
+      this.hardInstabilityCount > 0;
     return {
       step: this.stepIndex,
       time: this.elapsed,
@@ -242,7 +284,9 @@ export class PhaseField3DWebGpu {
       maxPhi: phiRange.max,
       minTemperature: tempRange.min,
       maxTemperature: tempRange.max,
-      unstable
+      unstable,
+      clampedPhiCells: this.clampedPhiCells,
+      clampedTemperatureCells: this.clampedTemperatureCells
     };
   }
 }
@@ -274,11 +318,16 @@ struct Params {
   values: array<f32>
 };
 
+struct Diagnostics {
+  values: array<atomic<u32>, 3>
+};
+
 @group(0) @binding(0) var<storage, read> phiIn: Field;
 @group(0) @binding(1) var<storage, read> tempIn: Field;
 @group(0) @binding(2) var<storage, read_write> phiOut: Field;
 @group(0) @binding(3) var<storage, read_write> tempOut: Field;
 @group(0) @binding(4) var<storage, read> params: Params;
+@group(0) @binding(5) var<storage, read_write> diagnostics: Diagnostics;
 
 const PI: f32 = 3.141592653589793;
 
@@ -468,15 +517,28 @@ fn main(@builtin(global_invocation_id) globalId: vec3<u32>) {
   let reaction = phi * (1.0 - phi) * (phi - 0.5 + drive);
   let noise = params.values[15] * phi * (1.0 - phi) * deterministicNoise(i, u32(params.values[17]), u32(params.values[16]));
   let dPhiDt = (anisotropicDiffusion(x, y, z) + reaction + noise) / params.values[5];
-  let nextPhi = clamp(phi + params.values[4] * dPhiDt, -0.05, 1.05);
+  let rawNextPhi = phi + params.values[4] * dPhiDt;
+  if (rawNextPhi < -0.05 || rawNextPhi > 1.05) {
+    atomicAdd(&diagnostics.values[0], 1u);
+  }
+  if (rawNextPhi != rawNextPhi || rawNextPhi < -0.5 || rawNextPhi > 1.5) {
+    atomicAdd(&diagnostics.values[2], 1u);
+  }
+  let nextPhi = clamp(rawNextPhi, -0.05, 1.05);
   phiOut.values[i] = nextPhi;
 
-  var nextTemp = temp + params.values[4] * params.values[7] * laplacianTemp(x, y, z) + params.values[8] * (nextPhi - phi);
+  var rawNextTemp = temp + params.values[4] * params.values[7] * laplacianTemp(x, y, z) + params.values[8] * (nextPhi - phi);
   let boundaryMode = i32(params.values[18]);
   if ((boundaryMode == 1 && (x == 0 || x == nx() - 1 || y == 0 || y == ny() - 1 || z == 0 || z == nz() - 1)) || (boundaryMode == 2 && x == 0)) {
-    nextTemp = params.values[19];
+    rawNextTemp = params.values[19];
   }
-  tempOut.values[i] = clamp(nextTemp, -4.0, 4.0);
+  if (rawNextTemp < -4.0 || rawNextTemp > 4.0) {
+    atomicAdd(&diagnostics.values[1], 1u);
+  }
+  if (rawNextTemp != rawNextTemp || abs(rawNextTemp) > 10.0) {
+    atomicAdd(&diagnostics.values[2], 1u);
+  }
+  tempOut.values[i] = clamp(rawNextTemp, -4.0, 4.0);
 }
 `;
 }

@@ -3,6 +3,7 @@ import { PhaseField2D, paperSchemeFluxForTest2D } from '../simulation/phaseField
 import { PhaseField3D } from '../simulation/phaseField3D';
 import { clonePreset, presets } from '../simulation/presets';
 import { index2D, index3D } from '../simulation/fields';
+import { webGpu2DStepShaderForTest } from '../simulation/phaseField2DWebGpu';
 
 describe('phase-field solvers', () => {
   it('keeps all presets finite for a single step', () => {
@@ -17,6 +18,30 @@ describe('phase-field solvers', () => {
       expect(Number.isFinite(stats.minTemperature)).toBe(true);
       expect(Number.isFinite(stats.maxTemperature)).toBe(true);
     }
+  });
+
+  it('uses the same signed noise range in the 2D WebGPU shader as the CPU solver', () => {
+    const shader = webGpu2DStepShaderForTest();
+    expect(shader).toContain('return f32(x) / 4294967296.0 - 0.5;');
+    expect(shader).not.toContain('* 2.0 - 1.0');
+  });
+
+  it('reports pre-clamp instability instead of hiding it behind field clamps', () => {
+    const config = clonePreset('2d-isotropic');
+    config.nx = 24;
+    config.ny = 24;
+    config.nucleusRadius = 3;
+    config.dt = 5;
+    config.diffusivity = 100;
+    config.noiseAmplitude = 0;
+    const solver = new PhaseField2D(config);
+    const stats = solver.step(1);
+
+    expect(stats.unstable).toBe(true);
+    expect(stats.clampedPhiCells).toBeGreaterThan(0);
+    expect(Math.max(Math.abs(stats.rawMinPhi ?? 0), Math.abs(stats.rawMaxPhi ?? 0))).toBeGreaterThan(1.5);
+    expect(stats.minPhi).toBeGreaterThanOrEqual(-0.051);
+    expect(stats.maxPhi).toBeLessThanOrEqual(1.051);
   });
 
   it('resets deterministically with the same seed', () => {

@@ -52,7 +52,6 @@ export class SceneRenderer {
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     if (this.activeDimension === '3d' && this.last3D) {
-      this.apply3DCamera(this.last3D.snapshot, this.last3D.config);
       this.renderer.render(this.scene, this.camera);
     }
   }

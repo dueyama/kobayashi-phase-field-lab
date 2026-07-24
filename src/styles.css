@@ -259,6 +259,21 @@ button {
     auto;
 }
 
+.active-backend {
+  position: absolute;
+  z-index: 4;
+  top: 12px;
+  left: 12px;
+  border: 1px solid rgba(139, 213, 248, 0.28);
+  padding: 5px 8px;
+  color: #dff7ff;
+  background: rgba(3, 8, 13, 0.78);
+  font-size: 10px;
+  font-weight: 760;
+  letter-spacing: 0;
+  pointer-events: none;
+}
+
 .viewport-stack {
   display: grid;
   grid-template-rows: minmax(0, 1fr);
@@ -274,6 +289,10 @@ button {
   display: block;
   width: 100%;
   height: 100%;
+  touch-action: none;
+  overscroll-behavior: contain;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .viewport-overlay {
@@ -1344,7 +1363,7 @@ input[type="range"] {
 
   .visual-stage {
     display: grid;
-    grid-template-rows: minmax(360px, 58svh) auto;
+    grid-template-rows: auto auto;
     overflow: visible;
   }
 
@@ -1452,7 +1471,7 @@ input[type="range"] {
   }
 
   .visual-stage {
-    grid-template-rows: minmax(340px, 56svh) auto;
+    grid-template-rows: auto auto;
   }
 
   .viewport-panel {

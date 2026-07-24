@@ -38,6 +38,7 @@ index.html                 # main app entry
 package.json
 vite.config.ts
 tsconfig.json
+CHANGELOG.md               # user-facing release history
 src/
   app/                     # application shell and page templates
   render/                  # 2D canvas and three.js/WebGL renderers
@@ -111,7 +112,11 @@ The Lab defaults to the experimental 2D WebGPU backend when WebGPU is available,
 
 The CPU reproduction path uses an implicit temperature solve, which is better for large `dt` but requires solving a coupled linear system. That kind of ICCG/Jacobi iteration is possible on a GPU, but it needs repeated global sweeps, reductions, and synchronization. The browser WebGPU path therefore uses explicit temperature integration instead. The cost is a stricter stability limit: diffusion and the latent-heat feedback term `K Δp` both constrain `dt`, and larger `K` requires a smaller `dt`.
 
-Even with a smaller `dt`, WebGPU can be faster because it updates many cells in parallel and can batch many solver steps before a visible frame. `steps/frame` is this display batching control; it does not change the numerical time step. The 3D Lab view still reads the fields back to JavaScript and rebuilds the isosurface on the CPU, so displayed frame rate can be lower than the raw compute rate. Because interface noise is sampled once per step, the app pre-scales the noise amplitude by `sqrt(reference dt / dt)` before passing it to WebGPU when `dt` is changed from a paper-target preset. The K2002 3D WebGPU presets use a common `dt = 5e-5` animation scale for both left and right targets; with `steps/frame = 45`, one display update advances about `0.00225` model time units.
+Even with a smaller `dt`, WebGPU can be faster because it updates many cells in parallel and can batch many solver steps before a visible frame. `steps/frame` is this display batching control; it does not change the numerical time step. The 3D Lab view still reads the fields back to JavaScript and rebuilds the isosurface on the CPU, so displayed frame rate can be lower than the raw compute rate.
+
+Interface noise is sampled independently once per solver step. When WebGPU changes a preset time step, the amplitude passed to the compute shader is therefore normalized as `a_effective = a * sqrt(dt_reference / dt)`, preserving the noise variance scale per unit model time. For example, changing `dt` from `2e-4` to `5e-5` passes `2a`; zero noise remains zero. This normalization applies to both 2D and 3D WebGPU stepping and is separate from `steps/frame`.
+
+The K2002 3D WebGPU presets use a common `dt = 5e-5` animation scale for both left and right targets.
 
 ## Deployment
 
@@ -120,6 +125,11 @@ Framework Preset: Vite
 Build Command: npm run build
 Output Directory: dist
 ```
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for user-facing changes and known reproduction
+differences between the CPU reference and experimental WebGPU backend.
 
 ## License
 

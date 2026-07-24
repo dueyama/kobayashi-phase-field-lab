@@ -7,6 +7,7 @@ import { PhaseField3DWorkerProxy } from '../simulation/phaseField3DWorkerProxy';
 import { clonePreset, labPresets, presets } from '../simulation/presets';
 import { createStateExportBlob, parseStateExportArrayBuffer } from '../simulation/stateExport';
 import { createIsosurfaceStlBlob } from '../simulation/stlExport';
+import { detectRuntimeProfile } from './runtimeProfile';
 import type {
   BoundaryCondition,
   Dimension,
@@ -119,9 +120,12 @@ export class PhaseFieldApp {
   private unstable = false;
   private stepping = false;
   private solverStatus = 'Initializing WebGPU...';
+  private activeBackendLabel = 'Initializing';
+  private computeStepsPerSecond = 0;
   private benchmarkRunning = false;
   private viewRoot: HTMLElement | null = null;
   private resizeObserver: ResizeObserver | null = null;
+  private latestStepStats: StepStats | null = null;
   private reproductionState:
     | {
         snapshot: SimulationSnapshot;
@@ -149,6 +153,7 @@ export class PhaseFieldApp {
 
     if (!this.unstable) {
       let stats: StepStats;
+      const computeStartedAt = performance.now();
       try {
         stats = await this.stepSolver(this.config.stepsPerFrame);
       } catch (error: unknown) {
@@ -158,7 +163,14 @@ export class PhaseFieldApp {
         this.showLab();
         return;
       }
+      const computeMilliseconds = Math.max(performance.now() - computeStartedAt, 0.01);
+      const currentStepsPerSecond = (this.config.stepsPerFrame * 1000) / computeMilliseconds;
+      this.computeStepsPerSecond =
+        this.computeStepsPerSecond === 0
+          ? currentStepsPerSecond
+          : this.computeStepsPerSecond * 0.75 + currentStepsPerSecond * 0.25;
       if (!this.running || this.page !== 'lab') return;
+      this.latestStepStats = stats;
       this.unstable = stats.unstable;
     }
 
@@ -524,6 +536,7 @@ export class PhaseFieldApp {
       this.showLab();
       return;
     }
+    this.latestStepStats = stats;
     this.unstable = stats.unstable;
     this.renderCurrentState(true);
   }
@@ -539,33 +552,42 @@ export class PhaseFieldApp {
 
   private async recreateSolver(resetUnstable: boolean): Promise<void> {
     this.disposeSolver();
+    this.latestStepStats = null;
     if ((this.config.solverBackend ?? 'cpu') === 'webgpu-experimental') {
       try {
         this.solver =
           this.config.dimension === '2d' ? await PhaseField2DWebGpu.create(this.config) : await PhaseField3DWebGpu.create(this.config);
+        this.activeBackendLabel = 'GPU · WebGPU';
         this.solverStatus =
           this.config.dimension === '2d'
             ? 'WebGPU experimental 2D: explicit p / explicit T'
-            : 'WebGPU experimental 3D: explicit p / explicit T';
+            : `WebGPU experimental 3D: explicit p / explicit T · ${detectRuntimeProfile()} batch`;
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error);
+        this.config.solverBackend = 'cpu';
+        restorePresetCpuNumerics(this.config);
         if (this.config.dimension === '2d') {
           this.solver = new PhaseField2D(this.config);
+          this.activeBackendLabel = 'CPU';
           this.solverStatus = `CPU fallback: ${message}`;
         } else {
           this.solver = await PhaseField3DWorkerProxy.create(this.config);
+          this.activeBackendLabel = 'CPU · Worker';
           this.solverStatus = `CPU worker fallback: ${message}`;
         }
       }
     } else {
       if (this.config.dimension === '2d') {
         this.solver = new PhaseField2D(this.config);
+        this.activeBackendLabel = 'CPU';
         this.solverStatus = 'CPU: explicit p / implicit T';
       } else {
         this.solver = await PhaseField3DWorkerProxy.create(this.config);
+        this.activeBackendLabel = 'CPU · Worker';
         this.solverStatus = 'CPU worker: 3D explicit p / implicit T';
       }
     }
+    this.computeStepsPerSecond = 0;
     if (resetUnstable) this.unstable = false;
   }
 
@@ -586,7 +608,7 @@ export class PhaseFieldApp {
     };
     set('step', snapshot.step.toLocaleString());
     set('time', snapshot.time.toFixed(2));
-    set('fps', this.running ? this.fps.toFixed(0) : 'Idle');
+    set('rate', this.running && this.computeStepsPerSecond > 0 ? `${this.computeStepsPerSecond.toFixed(1)} steps/s` : 'Idle');
     set(
       'grid',
       snapshot.dimension === '2d'
@@ -597,7 +619,14 @@ export class PhaseFieldApp {
     );
     set('phi', `${snapshot.minPhi.toFixed(2)} / ${snapshot.maxPhi.toFixed(2)}`);
     set('temp', `${snapshot.minTemperature.toFixed(2)} / ${snapshot.maxTemperature.toFixed(2)}`);
+    const backend = this.viewRoot?.querySelector<HTMLElement>('[data-active-backend]');
+    if (backend) backend.textContent = this.activeBackendLabel;
     const warning = this.viewRoot?.querySelector<HTMLElement>('[data-warning]');
+    const diagnostics = this.viewRoot?.querySelector<HTMLElement>('[data-solver-diagnostics]');
+    if (diagnostics) diagnostics.textContent = formatSolverDiagnostics(this.latestStepStats, this.config);
+    if (warning && this.latestStepStats) {
+      warning.textContent = instabilityWarning(this.latestStepStats);
+    }
     warning?.classList.toggle('visible', this.unstable);
   }
 
@@ -843,13 +872,14 @@ function labTemplate(config: PhaseFieldConfig, running: boolean, solverStatus: s
         <div class="viewport-stack ${hasReproducedFigure ? 'with-comparison' : ''}">
           <div class="viewport-panel" data-viewport>
             <div class="viewport-overlay"></div>
+            <div class="active-backend" data-active-backend>Initializing</div>
           </div>
           ${comparisonPanel(config)}
         </div>
         <div class="telemetry">
           ${telemetryItem('Step', 'step')}
           ${telemetryItem('Time', 'time')}
-          ${telemetryItem('FPS', 'fps')}
+          ${telemetryItem('Compute', 'rate')}
           ${telemetryItem('Mesh', 'grid')}
           ${telemetryItem('p min / max', 'phi')}
           ${telemetryItem('T min / max', 'temp')}
@@ -899,6 +929,7 @@ function labTemplate(config: PhaseFieldConfig, running: boolean, solverStatus: s
                 </select>
               </div>
               <div class="solver-status" data-solver-status>${escapeHtml(solverStatus)}</div>
+              <div class="benchmark-status" data-solver-diagnostics>${formatSolverDiagnostics(null, config)}</div>
               ${numberControl(
                 'Steps / frame',
                 'stepsPerFrame',
@@ -1169,6 +1200,37 @@ function solverBackendLabel(config: PhaseFieldConfig): string {
   return config.dimension === '3d' ? `${backend} 3D` : backend;
 }
 
+function formatSolverDiagnostics(stats: StepStats | null, config: PhaseFieldConfig): string {
+  if (!stats) {
+    return config.solverBackend === 'webgpu-experimental'
+      ? 'GPU diagnostics update after each compute batch.'
+      : 'ICCG convergence and pre-clamp diagnostics update after stepping.';
+  }
+
+  const parts: string[] = [];
+  if (stats.temperatureSolverIterations !== undefined) {
+    const residual =
+      stats.temperatureSolverResidual !== undefined && Number.isFinite(stats.temperatureSolverResidual)
+        ? stats.temperatureSolverResidual.toExponential(2)
+        : 'n/a';
+    parts.push(`T solver ${stats.temperatureSolverIterations} iterations, residual ${residual}`);
+  }
+  const clippedPhi = stats.clampedPhiCells ?? 0;
+  const clippedTemperature = stats.clampedTemperatureCells ?? 0;
+  parts.push(`pre-clamp hits p=${clippedPhi.toLocaleString()}, T=${clippedTemperature.toLocaleString()}`);
+  return parts.join('; ');
+}
+
+function instabilityWarning(stats: StepStats): string {
+  if (stats.temperatureSolverConverged === false) {
+    return `Temperature solve did not converge (residual ${stats.temperatureSolverResidual?.toExponential(2) ?? 'unknown'}).`;
+  }
+  if ((stats.clampedPhiCells ?? 0) > 0 || (stats.clampedTemperatureCells ?? 0) > 0) {
+    return `Numerical instability detected before clamping: p=${stats.rawMinPhi?.toExponential(2) ?? '?'}..${stats.rawMaxPhi?.toExponential(2) ?? '?'}, T=${stats.rawMinTemperature?.toExponential(2) ?? '?'}..${stats.rawMaxTemperature?.toExponential(2) ?? '?'}.`;
+  }
+  return 'Numerical instability detected. Reduce dt, noise, anisotropy strength, or mesh size.';
+}
+
 function webGpuStatusText(config: PhaseFieldConfig): string {
   const availability = webGpuAvailability();
   if (availability.available) return `WebGPU available. ${explicitTStabilityText(config)}`;
@@ -1407,7 +1469,7 @@ function reproductionTemplate(): string {
       <div class="content-inner reproduction-inner">
         <h1>Reproductions</h1>
         <p>This page collects simulator-generated outputs for the Kobayashi references. It does not distribute paper figures. K1993 entries show simulator-generated final-state thumbnails, and K2002 entries use public CPU/WebGL animations, final-state viewers, and STL isosurfaces generated from the listed presets.</p>
-        <p class="reproduction-note">All media on this page is simulator-generated. CPU implicit-temperature output is the reproduction sample path; WebGPU thumbnails show the experimental explicit-temperature backend. The comparison is qualitative; exact reproduction is not claimed.</p>
+        <p class="reproduction-note">All media on this page is simulator-generated. CPU implicit-temperature output is the reproduction sample path; WebGPU thumbnails show the experimental explicit-temperature backend. The comparison is qualitative; exact reproduction is not claimed. In the current Fig.9 low-noise cases, WebGPU suppresses side branching relative to the CPU reference.</p>
         <nav class="reproduction-section-nav" aria-label="Reproduction sections">
           <a href="#k1993-reproductions">K1993</a>
           <a href="#k2002-reproductions">K2002</a>
@@ -1996,7 +2058,8 @@ function modelTemplate(): string {
         <h2>WebGPU / GPGPU path</h2>
         <p>The Lab defaults to the experimental WebGPU backend for both 2D and 3D when WebGPU is available. WebGPU is used as a GPGPU stencil engine: one compute-shader invocation updates one grid cell from the previous ${mathInline('<mi>p</mi>', 'p')} and ${mathInline('<mi>T</mi>', 'temperature')} buffers, reads only a small local neighborhood, writes the next buffers, and then swaps buffers for the following step. This explicit local update is well matched to GPU hardware because many grid cells can be advanced in parallel with the same kernel.</p>
         <p>The CPU reproduction-oriented solver advances ${mathInline('<mi>p</mi>', 'p')} explicitly but solves ${mathInline('<mi>T</mi>', 'temperature')} diffusion implicitly. That implicit solve permits a larger <code>dt</code>, but it is a coupled linear-system solve with repeated ICCG/Jacobi sweeps and synchronization. The current browser WebGPU backend therefore uses explicit temperature integration instead. It needs a smaller <code>dt</code>, but the per-step work is massively parallel and can still be faster for interactive exploration.</p>
-        <p>When a preset is loaded with WebGPU selected, the app lowers <code>dt</code> to the explicit-temperature stability estimate and increases <code>steps/frame</code> to keep the displayed physical-time advance practical. Because the explicit ${mathInline('<mi>T</mi>', 'temperature')} update contains diffusion and the latent-heat term <code>K Δp</code>, larger <code>K</code> requires a smaller <code>dt</code>. Before dispatching the compute shader, the app pre-scales the noise amplitude by <code>sqrt(reference dt / dt)</code>, because the independent interface noise is sampled once per time step. Use WebGPU for interactive exploration, not for paper-target reproduction claims or public sample images.</p>
+        <p>When a preset is loaded with WebGPU selected, the app lowers <code>dt</code> to the explicit-temperature stability estimate and increases <code>steps/frame</code> to keep the displayed physical-time advance practical. Because the explicit ${mathInline('<mi>T</mi>', 'temperature')} update contains diffusion and the latent-heat term <code>K Δp</code>, larger <code>K</code> requires a smaller <code>dt</code>.</p>
+        <p>Independent interface noise is sampled once per solver step. Before dispatching the compute shader, the app uses ${mathInline('<mrow><msub><mi>a</mi><mtext>eff</mtext></msub><mo>=</mo><mi>a</mi><msqrt><mfrac><msub><mi mathvariant="normal">Δt</mi><mtext>ref</mtext></msub><mi mathvariant="normal">Δt</mi></mfrac></msqrt></mrow>', 'effective a equals a times the square root of reference delta t divided by delta t')} so changing <code>dt</code> preserves the noise variance scale per unit model time. Thus <code>dt: 2e-4 → 5e-5</code> passes <code>2a</code>; <code>a=0</code> remains zero. This applies to both 2D and 3D WebGPU stepping and is independent of <code>steps/frame</code>. Use WebGPU for interactive exploration, not for paper-target reproduction claims or public sample images.</p>
         <h2>Boundary conditions</h2>
         <p>${mathInline('<mi>p</mi>', 'p')} always uses no-flux / Neumann boundaries, following the zero-flux phase-field boundary described for K1993. ${mathInline('<mi>T</mi>', 'temperature')} can use adiabatic / no-flux, fixed-temperature edges, or a fixed-temperature left wall depending on the preset. Fig.7, Fig.8, Fig.9, and Fig.10 paper-target presets use the supercooled-melt adiabatic boundary setup.</p>
         ${threeDModelNotes()}

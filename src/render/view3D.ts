@@ -3,13 +3,18 @@ import { createXYMirrorGrid, createXYMirroredSnapshot, shouldMirrorXY } from '..
 import type { PhaseFieldConfig, SimulationSnapshot, ViewMode } from '../simulation/types';
 import type { IsosurfaceBuildResponse } from './isosurfaceWorker';
 import { IsosurfaceWorkerClient } from './isosurfaceWorkerClient';
-import { createVolumeRaycaster } from './volumeRaycaster';
+import {
+  createVolumeRaycaster,
+  type VolumeFieldInput,
+  type VolumeRaycaster
+} from './volumeRaycaster';
 import { createSliceStack, type SliceAxis, type SliceStack } from './volumeRenderer';
 
 export class View3D {
   readonly group = new THREE.Group();
   private surface: THREE.Mesh | null = null;
   private sliceStack: SliceStack | null = null;
+  private volumeRaycaster: VolumeRaycaster | null = null;
   private readonly contentGroup = new THREE.Group();
   private box: THREE.LineSegments | null = null;
   private boxKey = '';
@@ -38,15 +43,20 @@ export class View3D {
 
     if (config.renderMode3D === 'surface') {
       this.clearSlices();
+      this.clearVolume();
       if (force) this.cancelSurfaceBuilds();
       return this.updateSurface(snapshot, config, force);
     } else {
       this.clearSurface();
-      const displaySnapshot = createXYMirroredSnapshot(snapshot, config);
-      this.ensureBox(displaySnapshot.nx, displaySnapshot.ny, displaySnapshot.nz);
       if (config.renderMode3D === 'volume') {
-        this.updateVolume(displaySnapshot);
+        this.clearSlices();
+        const grid = createXYMirrorGrid(snapshot, config, shouldMirrorXY(config));
+        this.ensureBox(grid.nx, grid.ny, grid.nz);
+        this.updateVolume(snapshot, config, grid);
       } else {
+        this.clearVolume();
+        const displaySnapshot = createXYMirroredSnapshot(snapshot, config);
+        this.ensureBox(displaySnapshot.nx, displaySnapshot.ny, displaySnapshot.nz);
         this.updateSlices(displaySnapshot, config.viewMode, sliceAxisForConfig(config));
       }
       return undefined;
@@ -62,6 +72,7 @@ export class View3D {
     this.resolveSurfaceWaiters();
     this.clearSurface();
     this.clearSlices();
+    this.clearVolume();
     this.clearBox();
   }
 
@@ -198,15 +209,29 @@ export class View3D {
     this.contentGroup.add(this.sliceStack.group);
   }
 
-  private updateVolume(snapshot: SimulationSnapshot): void {
-    this.clearSlices();
-    this.sliceStack = createVolumeRaycaster(
-      snapshot.phi,
-      snapshot.nx,
-      snapshot.ny,
-      snapshot.nz
-    );
-    this.contentGroup.add(this.sliceStack.group);
+  private updateVolume(
+    snapshot: SimulationSnapshot,
+    config: PhaseFieldConfig,
+    grid: ReturnType<typeof createXYMirrorGrid>
+  ): void {
+    const input: VolumeFieldInput = {
+      phi: snapshot.phi,
+      sourceNx: snapshot.nx,
+      sourceNy: snapshot.ny,
+      sourceNz: snapshot.nz,
+      displayNx: grid.nx,
+      displayNy: grid.ny,
+      mirrorXY: grid.mirrorXY,
+      halfCellMirror: config.nucleusPlacement === 'bottom-corner-halfcell'
+    };
+    const dimensions = `${grid.nx}:${grid.ny}:${grid.nz}`;
+    if (this.volumeRaycaster?.dimensions === dimensions) {
+      this.volumeRaycaster.updatePhi(input);
+      return;
+    }
+    this.clearVolume();
+    this.volumeRaycaster = createVolumeRaycaster(input);
+    this.contentGroup.add(this.volumeRaycaster.group);
   }
 
   private clearSurface(): void {
@@ -241,6 +266,13 @@ export class View3D {
     this.contentGroup.remove(this.sliceStack.group);
     this.sliceStack.dispose();
     this.sliceStack = null;
+  }
+
+  private clearVolume(): void {
+    if (!this.volumeRaycaster) return;
+    this.contentGroup.remove(this.volumeRaycaster.group);
+    this.volumeRaycaster.dispose();
+    this.volumeRaycaster = null;
   }
 
   private ensureBox(nx: number, ny: number, nz: number): void {

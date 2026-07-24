@@ -22,6 +22,7 @@ export interface ImplicitTemperature2DResult {
   method: TemperatureSolver;
   iterations: number;
   residual: number;
+  converged: boolean;
 }
 
 export interface ImplicitTemperature3DWorkspace {
@@ -45,6 +46,7 @@ export interface ImplicitTemperature3DResult {
   method: TemperatureSolver;
   iterations: number;
   residual: number;
+  converged: boolean;
 }
 
 function sample2DBoundary(
@@ -182,18 +184,33 @@ export function solveImplicitTemperature2D(
   if (r === 0) {
     output.set(rhs);
     applyTemperatureBoundary2D(output, nx, ny, boundaryCondition, fixedValue);
-    return { method: options.method ?? 'iccg', iterations: 0, residual: 0 };
+    return { method: options.method ?? 'iccg', iterations: 0, residual: 0, converged: true };
   }
 
   const method = options.method ?? 'iccg';
-  if (method === 'iccg' && boundaryCondition === 'neumann') {
-    return solveImplicitTemperatureNeumannIccg2D(
+  if (method === 'iccg') {
+    if (boundaryCondition === 'neumann') {
+      return solveImplicitTemperatureNeumannIccg2D(
+        rhs,
+        output,
+        nx,
+        ny,
+        dx,
+        dt * diffusivity,
+        workspace,
+        options.iterations ?? 40,
+        options.tolerance ?? 1e-6
+      );
+    }
+    return solveImplicitTemperatureBoundaryIccg2D(
       rhs,
       output,
       nx,
       ny,
       dx,
       dt * diffusivity,
+      boundaryCondition,
+      fixedValue,
       workspace,
       options.iterations ?? 40,
       options.tolerance ?? 1e-6
@@ -214,7 +231,7 @@ export function solveImplicitTemperature2D(
     options.iterations ?? 12,
     options.omega ?? 1
   );
-  return { method: 'jacobi', iterations: options.iterations ?? 12, residual: Number.NaN };
+  return { method: 'jacobi', iterations: options.iterations ?? 12, residual: Number.NaN, converged: true };
 }
 
 export function solveImplicitTemperature3D(
@@ -235,12 +252,26 @@ export function solveImplicitTemperature3D(
   if (r === 0) {
     output.set(rhs);
     applyTemperatureBoundary3D(output, nx, ny, nz, boundaryCondition, fixedValue);
-    return { method: options.method ?? 'iccg', iterations: 0, residual: 0 };
+    return { method: options.method ?? 'iccg', iterations: 0, residual: 0, converged: true };
   }
 
   const method = options.method ?? 'iccg';
-  if (method === 'iccg' && boundaryCondition === 'neumann') {
-    return solveImplicitTemperatureNeumannIccg3D(
+  if (method === 'iccg') {
+    if (boundaryCondition === 'neumann') {
+      return solveImplicitTemperatureNeumannIccg3D(
+        rhs,
+        output,
+        nx,
+        ny,
+        nz,
+        dx,
+        dt * diffusivity,
+        workspace,
+        options.iterations ?? 12,
+        options.tolerance ?? 1e-6
+      );
+    }
+    return solveImplicitTemperatureBoundaryIccg3D(
       rhs,
       output,
       nx,
@@ -248,6 +279,8 @@ export function solveImplicitTemperature3D(
       nz,
       dx,
       dt * diffusivity,
+      boundaryCondition,
+      fixedValue,
       workspace,
       options.iterations ?? 12,
       options.tolerance ?? 1e-6
@@ -269,7 +302,7 @@ export function solveImplicitTemperature3D(
     options.iterations ?? 16,
     options.omega ?? 1
   );
-  return { method: 'jacobi', iterations: options.iterations ?? 16, residual: Number.NaN };
+  return { method: 'jacobi', iterations: options.iterations ?? 16, residual: Number.NaN, converged: true };
 }
 
 function solveImplicitTemperatureJacobi2D(
@@ -430,7 +463,7 @@ function solveImplicitTemperatureNeumannIccg2D(
   output.set(rhs);
   if (bNorm < 1e-30) {
     output.fill(0);
-    return { method: 'iccg', iterations: 0, residual: 0 };
+    return { method: 'iccg', iterations: 0, residual: 0, converged: true };
   }
 
   const diagonalKey = `${nx}:${ny}:${dx}:${diffusionStep}`;
@@ -445,14 +478,21 @@ function solveImplicitTemperatureNeumannIccg2D(
   }
   solveNeumannPreconditioner2D(nx, ny, diagonal, residual, direction, diffusionStep, dx, dx);
 
-  let rDotZ = dot(residual, direction);
-  if (Math.abs(rDotZ) < 1e-30) return { method: 'iccg', iterations: 0, residual: 0 };
   let relativeResidual = Math.sqrt(dot(residual, residual) / bNorm);
+  if (relativeResidual <= tolerance) {
+    return { method: 'iccg', iterations: 0, residual: relativeResidual, converged: true };
+  }
+  let rDotZ = dot(residual, direction);
+  if (Math.abs(rDotZ) < 1e-30) {
+    return { method: 'iccg', iterations: 0, residual: relativeResidual, converged: false };
+  }
 
   for (let iteration = 0; iteration < maxIterations; iteration += 1) {
     applyNeumannMatrix2D(nx, ny, direction, operator, 1, diffusionStep, dx, dx);
     const denom = dot(direction, operator);
-    if (Math.abs(denom) < 1e-30) return { method: 'iccg', iterations: iteration, residual: relativeResidual };
+    if (Math.abs(denom) < 1e-30) {
+      return { method: 'iccg', iterations: iteration, residual: relativeResidual, converged: relativeResidual <= tolerance };
+    }
 
     const alpha = rDotZ / denom;
     for (let i = 0; i < cells; i += 1) {
@@ -462,11 +502,15 @@ function solveImplicitTemperatureNeumannIccg2D(
 
     const residualNorm = dot(residual, residual);
     relativeResidual = Math.sqrt(residualNorm / bNorm);
-    if (relativeResidual <= tolerance) return { method: 'iccg', iterations: iteration + 1, residual: relativeResidual };
+    if (relativeResidual <= tolerance) {
+      return { method: 'iccg', iterations: iteration + 1, residual: relativeResidual, converged: true };
+    }
 
     solveNeumannPreconditioner2D(nx, ny, diagonal, residual, preconditioned, diffusionStep, dx, dx);
     const nextRDotZ = dot(residual, preconditioned);
-    if (Math.abs(rDotZ) < 1e-30) return { method: 'iccg', iterations: iteration + 1, residual: relativeResidual };
+    if (Math.abs(nextRDotZ) < 1e-30) {
+      return { method: 'iccg', iterations: iteration + 1, residual: relativeResidual, converged: relativeResidual <= tolerance };
+    }
     const beta = nextRDotZ / rDotZ;
     rDotZ = nextRDotZ;
 
@@ -474,7 +518,7 @@ function solveImplicitTemperatureNeumannIccg2D(
       direction[i] = preconditioned[i] + beta * direction[i];
     }
   }
-  return { method: 'iccg', iterations: maxIterations, residual: relativeResidual };
+  return { method: 'iccg', iterations: maxIterations, residual: relativeResidual, converged: relativeResidual <= tolerance };
 }
 
 function solveImplicitTemperatureNeumannIccg3D(
@@ -497,7 +541,7 @@ function solveImplicitTemperatureNeumannIccg3D(
   output.set(rhs);
   if (bNorm < 1e-30) {
     output.fill(0);
-    return { method: 'iccg', iterations: 0, residual: 0 };
+    return { method: 'iccg', iterations: 0, residual: 0, converged: true };
   }
 
   const diagonalKey = `${nx}:${ny}:${nz}:${dx}:${diffusionStep}`;
@@ -512,14 +556,21 @@ function solveImplicitTemperatureNeumannIccg3D(
   }
   solveNeumannPreconditioner3D(nx, ny, nz, diagonal, residual, direction, diffusionStep, dx, dx, dx);
 
-  let rDotZ = dot(residual, direction);
-  if (Math.abs(rDotZ) < 1e-30) return { method: 'iccg', iterations: 0, residual: 0 };
   let relativeResidual = Math.sqrt(dot(residual, residual) / bNorm);
+  if (relativeResidual <= tolerance) {
+    return { method: 'iccg', iterations: 0, residual: relativeResidual, converged: true };
+  }
+  let rDotZ = dot(residual, direction);
+  if (Math.abs(rDotZ) < 1e-30) {
+    return { method: 'iccg', iterations: 0, residual: relativeResidual, converged: false };
+  }
 
   for (let iteration = 0; iteration < maxIterations; iteration += 1) {
     applyNeumannMatrix3D(nx, ny, nz, direction, operator, 1, diffusionStep, dx, dx, dx);
     const denom = dot(direction, operator);
-    if (Math.abs(denom) < 1e-30) return { method: 'iccg', iterations: iteration, residual: relativeResidual };
+    if (Math.abs(denom) < 1e-30) {
+      return { method: 'iccg', iterations: iteration, residual: relativeResidual, converged: relativeResidual <= tolerance };
+    }
 
     const alpha = rDotZ / denom;
     for (let i = 0; i < cells; i += 1) {
@@ -529,11 +580,15 @@ function solveImplicitTemperatureNeumannIccg3D(
 
     const residualNorm = dot(residual, residual);
     relativeResidual = Math.sqrt(residualNorm / bNorm);
-    if (relativeResidual <= tolerance) return { method: 'iccg', iterations: iteration + 1, residual: relativeResidual };
+    if (relativeResidual <= tolerance) {
+      return { method: 'iccg', iterations: iteration + 1, residual: relativeResidual, converged: true };
+    }
 
     solveNeumannPreconditioner3D(nx, ny, nz, diagonal, residual, preconditioned, diffusionStep, dx, dx, dx);
     const nextRDotZ = dot(residual, preconditioned);
-    if (Math.abs(rDotZ) < 1e-30) return { method: 'iccg', iterations: iteration + 1, residual: relativeResidual };
+    if (Math.abs(nextRDotZ) < 1e-30) {
+      return { method: 'iccg', iterations: iteration + 1, residual: relativeResidual, converged: relativeResidual <= tolerance };
+    }
     const beta = nextRDotZ / rDotZ;
     rDotZ = nextRDotZ;
 
@@ -541,7 +596,486 @@ function solveImplicitTemperatureNeumannIccg3D(
       direction[i] = preconditioned[i] + beta * direction[i];
     }
   }
-  return { method: 'iccg', iterations: maxIterations, residual: relativeResidual };
+  return { method: 'iccg', iterations: maxIterations, residual: relativeResidual, converged: relativeResidual <= tolerance };
+}
+
+function solveImplicitTemperatureBoundaryIccg2D(
+  rhs: Float32Array,
+  output: Float32Array,
+  nx: number,
+  ny: number,
+  dx: number,
+  diffusionStep: number,
+  boundaryCondition: BoundaryCondition,
+  fixedValue: number,
+  workspace: ImplicitTemperature2DWorkspace | undefined,
+  maxIterations: number,
+  tolerance: number
+): ImplicitTemperature2DResult {
+  const cells = nx * ny;
+  const work = workspace ?? createImplicitTemperature2DWorkspace(cells);
+  const { scratch: effectiveRhs, diagonal, residual, direction, operator, preconditioned } = work;
+  const diffusionRatio = diffusionStep / (dx * dx);
+
+  prepareBoundaryRhs2D(rhs, effectiveRhs, nx, ny, diffusionRatio, boundaryCondition, fixedValue);
+  const bNorm = dot(effectiveRhs, effectiveRhs);
+  output.set(rhs);
+  applyTemperatureBoundary2D(output, nx, ny, boundaryCondition, fixedValue);
+  if (bNorm < 1e-30) {
+    output.fill(0);
+    applyTemperatureBoundary2D(output, nx, ny, boundaryCondition, fixedValue);
+    return { method: 'iccg', iterations: 0, residual: 0, converged: true };
+  }
+
+  const diagonalKey = `${nx}:${ny}:${dx}:${diffusionStep}:${boundaryCondition}`;
+  if (work.diagonalKey !== diagonalKey) {
+    decomposeBoundaryIccg2D(nx, ny, diffusionRatio, boundaryCondition, diagonal);
+    work.diagonalKey = diagonalKey;
+  }
+
+  applyBoundaryMatrix2D(output, operator, nx, ny, diffusionRatio, boundaryCondition);
+  for (let i = 0; i < cells; i += 1) residual[i] = effectiveRhs[i] - operator[i];
+  solveBoundaryPreconditioner2D(nx, ny, diffusionRatio, boundaryCondition, diagonal, residual, direction);
+
+  let relativeResidual = Math.sqrt(dot(residual, residual) / bNorm);
+  if (relativeResidual <= tolerance) {
+    return { method: 'iccg', iterations: 0, residual: relativeResidual, converged: true };
+  }
+
+  let rDotZ = dot(residual, direction);
+  if (Math.abs(rDotZ) < 1e-30) {
+    return { method: 'iccg', iterations: 0, residual: relativeResidual, converged: false };
+  }
+
+  for (let iteration = 0; iteration < maxIterations; iteration += 1) {
+    applyBoundaryMatrix2D(direction, operator, nx, ny, diffusionRatio, boundaryCondition);
+    const denominator = dot(direction, operator);
+    if (denominator <= 1e-30) {
+      return { method: 'iccg', iterations: iteration, residual: relativeResidual, converged: false };
+    }
+
+    const alpha = rDotZ / denominator;
+    for (let i = 0; i < cells; i += 1) {
+      output[i] += alpha * direction[i];
+      residual[i] -= alpha * operator[i];
+    }
+
+    relativeResidual = Math.sqrt(dot(residual, residual) / bNorm);
+    if (relativeResidual <= tolerance) {
+      applyTemperatureBoundary2D(output, nx, ny, boundaryCondition, fixedValue);
+      return { method: 'iccg', iterations: iteration + 1, residual: relativeResidual, converged: true };
+    }
+
+    solveBoundaryPreconditioner2D(nx, ny, diffusionRatio, boundaryCondition, diagonal, residual, preconditioned);
+    const nextRDotZ = dot(residual, preconditioned);
+    if (Math.abs(nextRDotZ) < 1e-30) {
+      return { method: 'iccg', iterations: iteration + 1, residual: relativeResidual, converged: false };
+    }
+    const beta = nextRDotZ / rDotZ;
+    rDotZ = nextRDotZ;
+    for (let i = 0; i < cells; i += 1) direction[i] = preconditioned[i] + beta * direction[i];
+  }
+
+  applyTemperatureBoundary2D(output, nx, ny, boundaryCondition, fixedValue);
+  return { method: 'iccg', iterations: maxIterations, residual: relativeResidual, converged: relativeResidual <= tolerance };
+}
+
+function solveImplicitTemperatureBoundaryIccg3D(
+  rhs: Float32Array,
+  output: Float32Array,
+  nx: number,
+  ny: number,
+  nz: number,
+  dx: number,
+  diffusionStep: number,
+  boundaryCondition: BoundaryCondition,
+  fixedValue: number,
+  workspace: ImplicitTemperature3DWorkspace | undefined,
+  maxIterations: number,
+  tolerance: number
+): ImplicitTemperature3DResult {
+  const cells = nx * ny * nz;
+  const work = workspace ?? createImplicitTemperature3DWorkspace(cells);
+  const { scratch: effectiveRhs, diagonal, residual, direction, operator, preconditioned } = work;
+  const diffusionRatio = diffusionStep / (dx * dx);
+
+  prepareBoundaryRhs3D(rhs, effectiveRhs, nx, ny, nz, diffusionRatio, boundaryCondition, fixedValue);
+  const bNorm = dot(effectiveRhs, effectiveRhs);
+  output.set(rhs);
+  applyTemperatureBoundary3D(output, nx, ny, nz, boundaryCondition, fixedValue);
+  if (bNorm < 1e-30) {
+    output.fill(0);
+    applyTemperatureBoundary3D(output, nx, ny, nz, boundaryCondition, fixedValue);
+    return { method: 'iccg', iterations: 0, residual: 0, converged: true };
+  }
+
+  const diagonalKey = `${nx}:${ny}:${nz}:${dx}:${diffusionStep}:${boundaryCondition}`;
+  if (work.diagonalKey !== diagonalKey) {
+    decomposeBoundaryIccg3D(nx, ny, nz, diffusionRatio, boundaryCondition, diagonal);
+    work.diagonalKey = diagonalKey;
+  }
+
+  applyBoundaryMatrix3D(output, operator, nx, ny, nz, diffusionRatio, boundaryCondition);
+  for (let i = 0; i < cells; i += 1) residual[i] = effectiveRhs[i] - operator[i];
+  solveBoundaryPreconditioner3D(nx, ny, nz, diffusionRatio, boundaryCondition, diagonal, residual, direction);
+
+  let relativeResidual = Math.sqrt(dot(residual, residual) / bNorm);
+  if (relativeResidual <= tolerance) {
+    return { method: 'iccg', iterations: 0, residual: relativeResidual, converged: true };
+  }
+
+  let rDotZ = dot(residual, direction);
+  if (Math.abs(rDotZ) < 1e-30) {
+    return { method: 'iccg', iterations: 0, residual: relativeResidual, converged: false };
+  }
+
+  for (let iteration = 0; iteration < maxIterations; iteration += 1) {
+    applyBoundaryMatrix3D(direction, operator, nx, ny, nz, diffusionRatio, boundaryCondition);
+    const denominator = dot(direction, operator);
+    if (denominator <= 1e-30) {
+      return { method: 'iccg', iterations: iteration, residual: relativeResidual, converged: false };
+    }
+
+    const alpha = rDotZ / denominator;
+    for (let i = 0; i < cells; i += 1) {
+      output[i] += alpha * direction[i];
+      residual[i] -= alpha * operator[i];
+    }
+
+    relativeResidual = Math.sqrt(dot(residual, residual) / bNorm);
+    if (relativeResidual <= tolerance) {
+      applyTemperatureBoundary3D(output, nx, ny, nz, boundaryCondition, fixedValue);
+      return { method: 'iccg', iterations: iteration + 1, residual: relativeResidual, converged: true };
+    }
+
+    solveBoundaryPreconditioner3D(nx, ny, nz, diffusionRatio, boundaryCondition, diagonal, residual, preconditioned);
+    const nextRDotZ = dot(residual, preconditioned);
+    if (Math.abs(nextRDotZ) < 1e-30) {
+      return { method: 'iccg', iterations: iteration + 1, residual: relativeResidual, converged: false };
+    }
+    const beta = nextRDotZ / rDotZ;
+    rDotZ = nextRDotZ;
+    for (let i = 0; i < cells; i += 1) direction[i] = preconditioned[i] + beta * direction[i];
+  }
+
+  applyTemperatureBoundary3D(output, nx, ny, nz, boundaryCondition, fixedValue);
+  return { method: 'iccg', iterations: maxIterations, residual: relativeResidual, converged: relativeResidual <= tolerance };
+}
+
+function prepareBoundaryRhs2D(
+  rhs: Float32Array,
+  output: Float32Array,
+  nx: number,
+  ny: number,
+  diffusionRatio: number,
+  boundaryCondition: BoundaryCondition,
+  fixedValue: number
+): void {
+  for (let y = 0; y < ny; y += 1) {
+    for (let x = 0; x < nx; x += 1) {
+      const i = index2D(x, y, nx);
+      if (isFixedTemperatureCell2D(x, y, nx, ny, boundaryCondition)) {
+        output[i] = fixedValue;
+        continue;
+      }
+      let value = rhs[i];
+      if (x > 0 && isFixedTemperatureCell2D(x - 1, y, nx, ny, boundaryCondition)) value += diffusionRatio * fixedValue;
+      if (x < nx - 1 && isFixedTemperatureCell2D(x + 1, y, nx, ny, boundaryCondition)) value += diffusionRatio * fixedValue;
+      if (y > 0 && isFixedTemperatureCell2D(x, y - 1, nx, ny, boundaryCondition)) value += diffusionRatio * fixedValue;
+      if (y < ny - 1 && isFixedTemperatureCell2D(x, y + 1, nx, ny, boundaryCondition)) value += diffusionRatio * fixedValue;
+      output[i] = value;
+    }
+  }
+}
+
+function prepareBoundaryRhs3D(
+  rhs: Float32Array,
+  output: Float32Array,
+  nx: number,
+  ny: number,
+  nz: number,
+  diffusionRatio: number,
+  boundaryCondition: BoundaryCondition,
+  fixedValue: number
+): void {
+  for (let z = 0; z < nz; z += 1) {
+    for (let y = 0; y < ny; y += 1) {
+      for (let x = 0; x < nx; x += 1) {
+        const i = index3D(x, y, z, nx, ny);
+        if (isFixedTemperatureCell3D(x, y, z, nx, ny, nz, boundaryCondition)) {
+          output[i] = fixedValue;
+          continue;
+        }
+        let value = rhs[i];
+        if (x > 0 && isFixedTemperatureCell3D(x - 1, y, z, nx, ny, nz, boundaryCondition)) value += diffusionRatio * fixedValue;
+        if (x < nx - 1 && isFixedTemperatureCell3D(x + 1, y, z, nx, ny, nz, boundaryCondition)) value += diffusionRatio * fixedValue;
+        if (y > 0 && isFixedTemperatureCell3D(x, y - 1, z, nx, ny, nz, boundaryCondition)) value += diffusionRatio * fixedValue;
+        if (y < ny - 1 && isFixedTemperatureCell3D(x, y + 1, z, nx, ny, nz, boundaryCondition)) value += diffusionRatio * fixedValue;
+        if (z > 0 && isFixedTemperatureCell3D(x, y, z - 1, nx, ny, nz, boundaryCondition)) value += diffusionRatio * fixedValue;
+        if (z < nz - 1 && isFixedTemperatureCell3D(x, y, z + 1, nx, ny, nz, boundaryCondition)) value += diffusionRatio * fixedValue;
+        output[i] = value;
+      }
+    }
+  }
+}
+
+function applyBoundaryMatrix2D(
+  input: Float32Array,
+  output: Float32Array,
+  nx: number,
+  ny: number,
+  diffusionRatio: number,
+  boundaryCondition: BoundaryCondition
+): void {
+  for (let y = 0; y < ny; y += 1) {
+    for (let x = 0; x < nx; x += 1) {
+      const i = index2D(x, y, nx);
+      if (isFixedTemperatureCell2D(x, y, nx, ny, boundaryCondition)) {
+        output[i] = input[i];
+        continue;
+      }
+      let center = 1;
+      let value = 0;
+      if (x > 0) {
+        center += diffusionRatio;
+        if (!isFixedTemperatureCell2D(x - 1, y, nx, ny, boundaryCondition)) value -= diffusionRatio * input[i - 1];
+      }
+      if (x < nx - 1) {
+        center += diffusionRatio;
+        if (!isFixedTemperatureCell2D(x + 1, y, nx, ny, boundaryCondition)) value -= diffusionRatio * input[i + 1];
+      }
+      if (y > 0) {
+        center += diffusionRatio;
+        if (!isFixedTemperatureCell2D(x, y - 1, nx, ny, boundaryCondition)) value -= diffusionRatio * input[i - nx];
+      }
+      if (y < ny - 1) {
+        center += diffusionRatio;
+        if (!isFixedTemperatureCell2D(x, y + 1, nx, ny, boundaryCondition)) value -= diffusionRatio * input[i + nx];
+      }
+      output[i] = center * input[i] + value;
+    }
+  }
+}
+
+function applyBoundaryMatrix3D(
+  input: Float32Array,
+  output: Float32Array,
+  nx: number,
+  ny: number,
+  nz: number,
+  diffusionRatio: number,
+  boundaryCondition: BoundaryCondition
+): void {
+  const plane = nx * ny;
+  for (let z = 0; z < nz; z += 1) {
+    for (let y = 0; y < ny; y += 1) {
+      for (let x = 0; x < nx; x += 1) {
+        const i = index3D(x, y, z, nx, ny);
+        if (isFixedTemperatureCell3D(x, y, z, nx, ny, nz, boundaryCondition)) {
+          output[i] = input[i];
+          continue;
+        }
+        let center = 1;
+        let value = 0;
+        if (x > 0) {
+          center += diffusionRatio;
+          if (!isFixedTemperatureCell3D(x - 1, y, z, nx, ny, nz, boundaryCondition)) value -= diffusionRatio * input[i - 1];
+        }
+        if (x < nx - 1) {
+          center += diffusionRatio;
+          if (!isFixedTemperatureCell3D(x + 1, y, z, nx, ny, nz, boundaryCondition)) value -= diffusionRatio * input[i + 1];
+        }
+        if (y > 0) {
+          center += diffusionRatio;
+          if (!isFixedTemperatureCell3D(x, y - 1, z, nx, ny, nz, boundaryCondition)) value -= diffusionRatio * input[i - nx];
+        }
+        if (y < ny - 1) {
+          center += diffusionRatio;
+          if (!isFixedTemperatureCell3D(x, y + 1, z, nx, ny, nz, boundaryCondition)) value -= diffusionRatio * input[i + nx];
+        }
+        if (z > 0) {
+          center += diffusionRatio;
+          if (!isFixedTemperatureCell3D(x, y, z - 1, nx, ny, nz, boundaryCondition)) value -= diffusionRatio * input[i - plane];
+        }
+        if (z < nz - 1) {
+          center += diffusionRatio;
+          if (!isFixedTemperatureCell3D(x, y, z + 1, nx, ny, nz, boundaryCondition)) value -= diffusionRatio * input[i + plane];
+        }
+        output[i] = center * input[i] + value;
+      }
+    }
+  }
+}
+
+function boundaryMatrixDiagonal2D(
+  x: number,
+  y: number,
+  nx: number,
+  ny: number,
+  diffusionRatio: number,
+  boundaryCondition: BoundaryCondition
+): number {
+  if (isFixedTemperatureCell2D(x, y, nx, ny, boundaryCondition)) return 1;
+  let neighbors = 0;
+  if (x > 0) neighbors += 1;
+  if (x < nx - 1) neighbors += 1;
+  if (y > 0) neighbors += 1;
+  if (y < ny - 1) neighbors += 1;
+  return 1 + diffusionRatio * neighbors;
+}
+
+function boundaryMatrixDiagonal3D(
+  x: number,
+  y: number,
+  z: number,
+  nx: number,
+  ny: number,
+  nz: number,
+  diffusionRatio: number,
+  boundaryCondition: BoundaryCondition
+): number {
+  if (isFixedTemperatureCell3D(x, y, z, nx, ny, nz, boundaryCondition)) return 1;
+  let neighbors = 0;
+  if (x > 0) neighbors += 1;
+  if (x < nx - 1) neighbors += 1;
+  if (y > 0) neighbors += 1;
+  if (y < ny - 1) neighbors += 1;
+  if (z > 0) neighbors += 1;
+  if (z < nz - 1) neighbors += 1;
+  return 1 + diffusionRatio * neighbors;
+}
+
+function decomposeBoundaryIccg2D(
+  nx: number,
+  ny: number,
+  diffusionRatio: number,
+  boundaryCondition: BoundaryCondition,
+  diagonal: Float32Array
+): void {
+  const coefficientSquared = diffusionRatio * diffusionRatio;
+  for (let y = 0; y < ny; y += 1) {
+    for (let x = 0; x < nx; x += 1) {
+      const i = index2D(x, y, nx);
+      if (isFixedTemperatureCell2D(x, y, nx, ny, boundaryCondition)) {
+        diagonal[i] = 1;
+        continue;
+      }
+      let pivot = boundaryMatrixDiagonal2D(x, y, nx, ny, diffusionRatio, boundaryCondition);
+      if (x > 0 && !isFixedTemperatureCell2D(x - 1, y, nx, ny, boundaryCondition)) {
+        pivot -= coefficientSquared * diagonal[i - 1];
+      }
+      if (y > 0 && !isFixedTemperatureCell2D(x, y - 1, nx, ny, boundaryCondition)) {
+        pivot -= coefficientSquared * diagonal[i - nx];
+      }
+      diagonal[i] = 1 / Math.max(pivot, 1e-20);
+    }
+  }
+}
+
+function decomposeBoundaryIccg3D(
+  nx: number,
+  ny: number,
+  nz: number,
+  diffusionRatio: number,
+  boundaryCondition: BoundaryCondition,
+  diagonal: Float32Array
+): void {
+  const coefficientSquared = diffusionRatio * diffusionRatio;
+  const plane = nx * ny;
+  for (let z = 0; z < nz; z += 1) {
+    for (let y = 0; y < ny; y += 1) {
+      for (let x = 0; x < nx; x += 1) {
+        const i = index3D(x, y, z, nx, ny);
+        if (isFixedTemperatureCell3D(x, y, z, nx, ny, nz, boundaryCondition)) {
+          diagonal[i] = 1;
+          continue;
+        }
+        let pivot = boundaryMatrixDiagonal3D(x, y, z, nx, ny, nz, diffusionRatio, boundaryCondition);
+        if (x > 0 && !isFixedTemperatureCell3D(x - 1, y, z, nx, ny, nz, boundaryCondition)) {
+          pivot -= coefficientSquared * diagonal[i - 1];
+        }
+        if (y > 0 && !isFixedTemperatureCell3D(x, y - 1, z, nx, ny, nz, boundaryCondition)) {
+          pivot -= coefficientSquared * diagonal[i - nx];
+        }
+        if (z > 0 && !isFixedTemperatureCell3D(x, y, z - 1, nx, ny, nz, boundaryCondition)) {
+          pivot -= coefficientSquared * diagonal[i - plane];
+        }
+        diagonal[i] = 1 / Math.max(pivot, 1e-20);
+      }
+    }
+  }
+}
+
+function solveBoundaryPreconditioner2D(
+  nx: number,
+  ny: number,
+  diffusionRatio: number,
+  boundaryCondition: BoundaryCondition,
+  diagonal: Float32Array,
+  residual: Float32Array,
+  output: Float32Array
+): void {
+  for (let y = 0; y < ny; y += 1) {
+    for (let x = 0; x < nx; x += 1) {
+      const i = index2D(x, y, nx);
+      let value = residual[i];
+      if (!isFixedTemperatureCell2D(x, y, nx, ny, boundaryCondition)) {
+        if (x > 0 && !isFixedTemperatureCell2D(x - 1, y, nx, ny, boundaryCondition)) value += diffusionRatio * output[i - 1];
+        if (y > 0 && !isFixedTemperatureCell2D(x, y - 1, nx, ny, boundaryCondition)) value += diffusionRatio * output[i - nx];
+      }
+      output[i] = diagonal[i] * value;
+    }
+  }
+  for (let y = ny - 1; y >= 0; y -= 1) {
+    for (let x = nx - 1; x >= 0; x -= 1) {
+      const i = index2D(x, y, nx);
+      if (isFixedTemperatureCell2D(x, y, nx, ny, boundaryCondition)) continue;
+      let correction = 0;
+      if (x < nx - 1 && !isFixedTemperatureCell2D(x + 1, y, nx, ny, boundaryCondition)) correction -= diffusionRatio * output[i + 1];
+      if (y < ny - 1 && !isFixedTemperatureCell2D(x, y + 1, nx, ny, boundaryCondition)) correction -= diffusionRatio * output[i + nx];
+      output[i] -= diagonal[i] * correction;
+    }
+  }
+}
+
+function solveBoundaryPreconditioner3D(
+  nx: number,
+  ny: number,
+  nz: number,
+  diffusionRatio: number,
+  boundaryCondition: BoundaryCondition,
+  diagonal: Float32Array,
+  residual: Float32Array,
+  output: Float32Array
+): void {
+  const plane = nx * ny;
+  for (let z = 0; z < nz; z += 1) {
+    for (let y = 0; y < ny; y += 1) {
+      for (let x = 0; x < nx; x += 1) {
+        const i = index3D(x, y, z, nx, ny);
+        let value = residual[i];
+        if (!isFixedTemperatureCell3D(x, y, z, nx, ny, nz, boundaryCondition)) {
+          if (x > 0 && !isFixedTemperatureCell3D(x - 1, y, z, nx, ny, nz, boundaryCondition)) value += diffusionRatio * output[i - 1];
+          if (y > 0 && !isFixedTemperatureCell3D(x, y - 1, z, nx, ny, nz, boundaryCondition)) value += diffusionRatio * output[i - nx];
+          if (z > 0 && !isFixedTemperatureCell3D(x, y, z - 1, nx, ny, nz, boundaryCondition)) value += diffusionRatio * output[i - plane];
+        }
+        output[i] = diagonal[i] * value;
+      }
+    }
+  }
+  for (let z = nz - 1; z >= 0; z -= 1) {
+    for (let y = ny - 1; y >= 0; y -= 1) {
+      for (let x = nx - 1; x >= 0; x -= 1) {
+        const i = index3D(x, y, z, nx, ny);
+        if (isFixedTemperatureCell3D(x, y, z, nx, ny, nz, boundaryCondition)) continue;
+        let correction = 0;
+        if (x < nx - 1 && !isFixedTemperatureCell3D(x + 1, y, z, nx, ny, nz, boundaryCondition)) correction -= diffusionRatio * output[i + 1];
+        if (y < ny - 1 && !isFixedTemperatureCell3D(x, y + 1, z, nx, ny, nz, boundaryCondition)) correction -= diffusionRatio * output[i + nx];
+        if (z < nz - 1 && !isFixedTemperatureCell3D(x, y, z + 1, nx, ny, nz, boundaryCondition)) correction -= diffusionRatio * output[i + plane];
+        output[i] -= diagonal[i] * correction;
+      }
+    }
+  }
 }
 
 export function createImplicitTemperature2DWorkspace(cells: number): ImplicitTemperature2DWorkspace {

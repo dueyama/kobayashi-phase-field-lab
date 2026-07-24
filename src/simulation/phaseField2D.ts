@@ -33,6 +33,16 @@ export class PhaseField2D {
   private dPhi: Float32Array;
   private stepIndex = 0;
   private elapsed = 0;
+  private rawMinPhi = 0;
+  private rawMaxPhi = 1;
+  private rawMinTemperature = 0;
+  private rawMaxTemperature = 0;
+  private clampedPhiCells = 0;
+  private clampedTemperatureCells = 0;
+  private stepNumericallyUnstable = false;
+  private temperatureSolverIterations = 0;
+  private temperatureSolverResidual = 0;
+  private temperatureSolverConverged = true;
   private currentStats: StepStats = {
     step: 0,
     time: 0,
@@ -118,6 +128,7 @@ export class PhaseField2D {
     this.dPhi.fill(0);
     this.stepIndex = 0;
     this.elapsed = 0;
+    this.resetStepDiagnostics();
     this.currentStats = this.calculateStats();
   }
 
@@ -149,6 +160,7 @@ export class PhaseField2D {
 
   private singleStep(): void {
     const { nx, ny, dx, dt, tau } = this.config;
+    this.resetStepDiagnostics();
     for (let y = 0; y < ny; y += 1) {
       for (let x = 0; x < nx; x += 1) {
         const i = index2D(x, y, nx);
@@ -158,14 +170,19 @@ export class PhaseField2D {
         const reaction = reactionTerm(phi, temperature, this.config.undercooling, this.config.driveAlpha, this.config.driveGamma);
         const noise = localizedNoise(phi, this.config.noiseAmplitude, deterministicNoise(this.config.seed, i, this.stepIndex));
         const dPhi = (diffusion + reaction + noise) / tau;
-        const nextPhi = clamp(phi + dt * dPhi, -0.05, 1.05);
+        const rawNextPhi = phi + dt * dPhi;
+        this.rawMinPhi = Math.min(this.rawMinPhi, rawNextPhi);
+        this.rawMaxPhi = Math.max(this.rawMaxPhi, rawNextPhi);
+        if (rawNextPhi < -0.05 || rawNextPhi > 1.05) this.clampedPhiCells += 1;
+        if (!Number.isFinite(rawNextPhi) || rawNextPhi < -0.5 || rawNextPhi > 1.5) this.stepNumericallyUnstable = true;
+        const nextPhi = clamp(rawNextPhi, -0.05, 1.05);
         this.nextPhi[i] = nextPhi;
         this.dPhi[i] = (nextPhi - phi) / dt;
         this.temperatureRhs[i] = temperature + this.config.latentHeat * (nextPhi - phi);
       }
     }
 
-    solveImplicitTemperature2D(
+    const temperatureSolve = solveImplicitTemperature2D(
       this.temperatureRhs,
       this.nextTemperature,
       nx,
@@ -182,9 +199,18 @@ export class PhaseField2D {
         tolerance: this.config.temperatureSolverTolerance
       }
     );
+    this.temperatureSolverIterations = temperatureSolve.iterations;
+    this.temperatureSolverResidual = temperatureSolve.residual;
+    this.temperatureSolverConverged = temperatureSolve.converged;
+    if (!temperatureSolve.converged) this.stepNumericallyUnstable = true;
 
     for (let i = 0; i < this.nextTemperature.length; i += 1) {
-      this.nextTemperature[i] = clamp(this.nextTemperature[i], -4, 4);
+      const rawNextTemperature = this.nextTemperature[i];
+      this.rawMinTemperature = Math.min(this.rawMinTemperature, rawNextTemperature);
+      this.rawMaxTemperature = Math.max(this.rawMaxTemperature, rawNextTemperature);
+      if (rawNextTemperature < -4 || rawNextTemperature > 4) this.clampedTemperatureCells += 1;
+      if (!Number.isFinite(rawNextTemperature) || Math.abs(rawNextTemperature) > 10) this.stepNumericallyUnstable = true;
+      this.nextTemperature[i] = clamp(rawNextTemperature, -4, 4);
     }
     if (this.config.boundaryCondition === 'fixed-temperature') {
       applyFixedBoundary2D(this.nextTemperature, nx, ny, this.config.boundaryTemperature);
@@ -216,8 +242,30 @@ export class PhaseField2D {
       maxPhi: phiRange.max,
       minTemperature: tempRange.min,
       maxTemperature: tempRange.max,
-      unstable
+      unstable: unstable || this.stepNumericallyUnstable,
+      rawMinPhi: this.rawMinPhi,
+      rawMaxPhi: this.rawMaxPhi,
+      rawMinTemperature: this.rawMinTemperature,
+      rawMaxTemperature: this.rawMaxTemperature,
+      clampedPhiCells: this.clampedPhiCells,
+      clampedTemperatureCells: this.clampedTemperatureCells,
+      temperatureSolverIterations: this.temperatureSolverIterations,
+      temperatureSolverResidual: this.temperatureSolverResidual,
+      temperatureSolverConverged: this.temperatureSolverConverged
     };
+  }
+
+  private resetStepDiagnostics(): void {
+    this.rawMinPhi = Number.POSITIVE_INFINITY;
+    this.rawMaxPhi = Number.NEGATIVE_INFINITY;
+    this.rawMinTemperature = Number.POSITIVE_INFINITY;
+    this.rawMaxTemperature = Number.NEGATIVE_INFINITY;
+    this.clampedPhiCells = 0;
+    this.clampedTemperatureCells = 0;
+    this.stepNumericallyUnstable = false;
+    this.temperatureSolverIterations = 0;
+    this.temperatureSolverResidual = 0;
+    this.temperatureSolverConverged = true;
   }
 }
 

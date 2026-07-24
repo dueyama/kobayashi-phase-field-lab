@@ -181,6 +181,168 @@ describe('laplacian helpers', () => {
     expect(maxAbsDiff(jacobi, iccg)).toBeLessThan(1e-4);
   });
 
+  it('matches converged Jacobi and ICCG solves with a fixed left temperature wall', () => {
+    const nx = 14;
+    const ny = 11;
+    const rhs = new Float32Array(nx * ny);
+    for (let y = 0; y < ny; y += 1) {
+      for (let x = 0; x < nx; x += 1) {
+        rhs[index2D(x, y, nx)] = 0.25 + 0.02 * x + 0.01 * y;
+      }
+    }
+    const jacobi = new Float32Array(nx * ny);
+    const iccg = new Float32Array(nx * ny);
+    const fixedValue = -0.4;
+
+    solveImplicitTemperature2D(rhs, jacobi, nx, ny, 0.03, 0.0002, 1, 'left-fixed-temperature', fixedValue, undefined, {
+      method: 'jacobi',
+      iterations: 1200
+    });
+    const result = solveImplicitTemperature2D(
+      rhs,
+      iccg,
+      nx,
+      ny,
+      0.03,
+      0.0002,
+      1,
+      'left-fixed-temperature',
+      fixedValue,
+      undefined,
+      {
+        method: 'iccg',
+        iterations: 120,
+        tolerance: 1e-9
+      }
+    );
+
+    expect(result.method).toBe('iccg');
+    expect(result.converged).toBe(true);
+    expect(result.residual).toBeLessThan(1e-8);
+    expect(maxAbsDiff(jacobi, iccg)).toBeLessThan(2e-4);
+    for (let y = 0; y < ny; y += 1) {
+      expect(iccg[index2D(0, y, nx)]).toBeCloseTo(fixedValue, 6);
+    }
+  });
+
+  it('matches converged Jacobi and ICCG solves with fully fixed 2D boundaries', () => {
+    const nx = 12;
+    const ny = 10;
+    const rhs = new Float32Array(nx * ny);
+    for (let y = 0; y < ny; y += 1) {
+      for (let x = 0; x < nx; x += 1) {
+        rhs[index2D(x, y, nx)] = 0.1 + 0.03 * Math.sin(x * 0.7) + 0.02 * Math.cos(y * 0.4);
+      }
+    }
+    const jacobi = new Float32Array(rhs.length);
+    const iccg = new Float32Array(rhs.length);
+    const fixedValue = -0.3;
+
+    solveImplicitTemperature2D(rhs, jacobi, nx, ny, 0.03, 0.0002, 1, 'fixed-temperature', fixedValue, undefined, {
+      method: 'jacobi',
+      iterations: 1200
+    });
+    const result = solveImplicitTemperature2D(
+      rhs,
+      iccg,
+      nx,
+      ny,
+      0.03,
+      0.0002,
+      1,
+      'fixed-temperature',
+      fixedValue,
+      undefined,
+      {
+        method: 'iccg',
+        iterations: 120,
+        tolerance: 1e-9
+      }
+    );
+
+    expect(result.converged).toBe(true);
+    expect(maxAbsDiff(jacobi, iccg)).toBeLessThan(2e-4);
+  });
+
+  it('solves fully fixed 3D temperature boundaries with ICCG', () => {
+    const nx = 7;
+    const ny = 6;
+    const nz = 5;
+    const rhs = new Float32Array(nx * ny * nz).fill(0.75);
+    rhs[index3D(3, 3, 2, nx, ny)] = 1.5;
+    const output = new Float32Array(rhs.length);
+    const fixedValue = -0.2;
+    const result = solveImplicitTemperature3D(
+      rhs,
+      output,
+      nx,
+      ny,
+      nz,
+      0.03,
+      0.0002,
+      1,
+      'fixed-temperature',
+      fixedValue,
+      undefined,
+      {
+        method: 'iccg',
+        iterations: 120,
+        tolerance: 1e-8
+      }
+    );
+
+    expect(result.method).toBe('iccg');
+    expect(result.converged).toBe(true);
+    expect(result.residual).toBeLessThan(1e-7);
+    expect(output[index3D(0, 3, 2, nx, ny)]).toBeCloseTo(fixedValue, 6);
+    expect(output[index3D(3, 0, 2, nx, ny)]).toBeCloseTo(fixedValue, 6);
+    expect(output[index3D(3, 3, 0, nx, ny)]).toBeCloseTo(fixedValue, 6);
+    expect(output[index3D(3, 3, 2, nx, ny)]).toBeGreaterThan(fixedValue);
+  });
+
+  it('matches converged Jacobi and ICCG solves with a fixed left 3D wall', () => {
+    const nx = 7;
+    const ny = 6;
+    const nz = 5;
+    const rhs = new Float32Array(nx * ny * nz);
+    for (let z = 0; z < nz; z += 1) {
+      for (let y = 0; y < ny; y += 1) {
+        for (let x = 0; x < nx; x += 1) {
+          rhs[index3D(x, y, z, nx, ny)] = 0.2 + 0.02 * x + 0.01 * y - 0.015 * z;
+        }
+      }
+    }
+    const jacobi = new Float32Array(rhs.length);
+    const iccg = new Float32Array(rhs.length);
+    const fixedValue = -0.25;
+
+    solveImplicitTemperature3D(rhs, jacobi, nx, ny, nz, 0.03, 0.0002, 1, 'left-fixed-temperature', fixedValue, undefined, {
+      method: 'jacobi',
+      iterations: 1200
+    });
+    const result = solveImplicitTemperature3D(
+      rhs,
+      iccg,
+      nx,
+      ny,
+      nz,
+      0.03,
+      0.0002,
+      1,
+      'left-fixed-temperature',
+      fixedValue,
+      undefined,
+      {
+        method: 'iccg',
+        iterations: 120,
+        tolerance: 1e-9
+      }
+    );
+
+    expect(result.converged).toBe(true);
+    expect(maxAbsDiff(jacobi, iccg)).toBeLessThan(2e-4);
+  });
+
   it('solves implicit 3D temperature diffusion without changing constant Neumann fields', () => {
     const nx = 6;
     const ny = 5;
