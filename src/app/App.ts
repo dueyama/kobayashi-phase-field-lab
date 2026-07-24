@@ -7,6 +7,20 @@ import { PhaseField3DWorkerProxy } from '../simulation/phaseField3DWorkerProxy';
 import { clonePreset, labPresets, presets } from '../simulation/presets';
 import { createStateExportBlob, parseStateExportArrayBuffer } from '../simulation/stateExport';
 import { createIsosurfaceStlBlob } from '../simulation/stlExport';
+import {
+  getLocale,
+  initializeLocale,
+  isJapanese,
+  localeTag,
+  setLocale as setAppLocale,
+  t,
+  type AppLocale
+} from './i18n';
+import {
+  localizedPaperDetails,
+  localizedPresetDescription,
+  localizedPresetName
+} from './presetLocalization';
 import { detectRuntimeProfile } from './runtimeProfile';
 import type {
   BoundaryCondition,
@@ -109,6 +123,7 @@ function restorePresetCpuNumerics(config: PhaseFieldConfig): void {
 }
 
 export class PhaseFieldApp {
+  private locale: AppLocale = initializeLocale();
   private config: PhaseFieldConfig = labConfigForPreset(DEFAULT_LAB_PRESET_ID);
   private solver: Solver = new PhaseField2D({ ...this.config, solverBackend: 'cpu' });
   private renderer: SceneRenderer | null = null;
@@ -119,8 +134,8 @@ export class PhaseFieldApp {
   private animationFrameId: number | null = null;
   private unstable = false;
   private stepping = false;
-  private solverStatus = 'Initializing WebGPU...';
-  private activeBackendLabel = 'Initializing';
+  private solverStatus = t('initializingWebGpu');
+  private activeBackendLabel = t('initializing');
   private computeStepsPerSecond = 0;
   private benchmarkRunning = false;
   private viewRoot: HTMLElement | null = null;
@@ -159,7 +174,7 @@ export class PhaseFieldApp {
       } catch (error: unknown) {
         if (!this.running) return;
         this.running = false;
-        this.solverStatus = error instanceof Error ? `Solver stopped: ${error.message}` : `Solver stopped: ${String(error)}`;
+        this.solverStatus = solverStoppedMessage(error);
         this.showLab();
         return;
       }
@@ -226,6 +241,32 @@ export class PhaseFieldApp {
         this.setPage(next);
       });
     });
+    this.root.querySelectorAll<HTMLButtonElement>('[data-locale]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const locale = button.dataset.locale as AppLocale | undefined;
+        if (locale) this.setLocale(locale);
+      });
+    });
+  }
+
+  private setLocale(locale: AppLocale): void {
+    if (locale === this.locale) return;
+    this.stopLoop();
+    this.renderer?.dispose();
+    this.renderer = null;
+    this.resizeObserver?.disconnect();
+    this.resizeObserver = null;
+    this.locale = locale;
+    setAppLocale(locale);
+    this.solverStatus = localizedSolverStatus(this.solverStatus);
+    this.activeBackendLabel = localizedActiveBackendLabel(this.activeBackendLabel);
+    this.root.innerHTML = shellTemplate(this.page);
+    this.viewRoot = this.root.querySelector<HTMLElement>('[data-view-root]');
+    this.bindTopNav();
+    if (this.page === 'lab') this.showLab();
+    if (this.page === 'reproduction') this.showReproduction();
+    if (this.page === 'model') this.showModel();
+    if (this.page === 'references') this.showReferences();
   }
 
   private setPage(page: Page): void {
@@ -325,8 +366,8 @@ export class PhaseFieldApp {
     if (!viewer || !host || !status || !title) return;
 
     viewer.hidden = false;
-    title.textContent = 'Loading final state';
-    status.textContent = 'Fetching public .pfstate field data...';
+    title.textContent = ui('Loading final state', '最終状態を読み込み中');
+    status.textContent = ui('Fetching public .pfstate field data...', '公開.pfstate場データを取得しています...');
     host.replaceChildren();
 
     try {
@@ -354,11 +395,11 @@ export class PhaseFieldApp {
       this.renderer.render(parsed.snapshot, viewerConfig, true);
       this.syncReproductionRenderMode('surface');
 
-      title.textContent = preset?.name ?? 'Final state viewer';
+      title.textContent = preset ? localizedPresetName(preset) : t('finalStateViewer');
       status.textContent = this.reproductionStateStatus(parsed.snapshot, viewerConfig);
       viewer.scrollIntoView({ block: 'nearest' });
     } catch (error: unknown) {
-      title.textContent = 'Final state failed to load';
+      title.textContent = ui('Final state failed to load', '最終状態を読み込めませんでした');
       status.textContent = error instanceof Error ? error.message : String(error);
     }
   }
@@ -386,7 +427,17 @@ export class PhaseFieldApp {
           ? 'Data3DTexture ray-marched volume'
           : 'orthogonal slices';
     const mirrorNote = config.nucleusPlacement === 'bottom-corner-halfcell' ? ', x-y mirrored for display' : '';
-    return `${meshLabel(config)} mesh${mirrorNote}, t=${snapshot.time.toFixed(3)}, step=${snapshot.step.toLocaleString()}, ${mode}. Drag to rotate; scroll or pinch to zoom.`;
+    if (isJapanese()) {
+      const japaneseMode =
+        config.renderMode3D === 'surface'
+          ? 'p=0.5等値面'
+          : config.renderMode3D === 'volume'
+            ? 'Data3DTextureレイマーチング・ボリューム'
+            : '直交断面';
+      const japaneseMirror = config.nucleusPlacement === 'bottom-corner-halfcell' ? '、表示はx-y反転' : '';
+      return `${meshLabel(config)}メッシュ${japaneseMirror}、t=${snapshot.time.toFixed(3)}、step=${snapshot.step.toLocaleString(localeTag())}、${japaneseMode}。ドラッグで回転、スクロールまたはピンチで拡大縮小できます。`;
+    }
+    return `${meshLabel(config)} mesh${mirrorNote}, t=${snapshot.time.toFixed(3)}, step=${snapshot.step.toLocaleString(localeTag())}, ${mode}. Drag to rotate; scroll or pinch to zoom.`;
   }
 
   private bindLabControls(): void {
@@ -532,7 +583,7 @@ export class PhaseFieldApp {
     try {
       stats = await this.stepSolver(1);
     } catch (error: unknown) {
-      this.solverStatus = error instanceof Error ? `Solver stopped: ${error.message}` : `Solver stopped: ${String(error)}`;
+      this.solverStatus = solverStoppedMessage(error);
       this.showLab();
       return;
     }
@@ -560,8 +611,11 @@ export class PhaseFieldApp {
         this.activeBackendLabel = 'GPU · WebGPU';
         this.solverStatus =
           this.config.dimension === '2d'
-            ? 'WebGPU experimental 2D: explicit p / explicit T'
-            : `WebGPU experimental 3D: explicit p / explicit T · ${detectRuntimeProfile()} batch`;
+            ? ui('WebGPU experimental 2D: explicit p / explicit T', 'WebGPU実験版2D: p陽解法 / T陽解法')
+            : ui(
+                `WebGPU experimental 3D: explicit p / explicit T · ${detectRuntimeProfile()} batch`,
+                `WebGPU実験版3D: p陽解法 / T陽解法 · ${detectRuntimeProfile()}バッチ`
+              );
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error);
         this.config.solverBackend = 'cpu';
@@ -569,22 +623,22 @@ export class PhaseFieldApp {
         if (this.config.dimension === '2d') {
           this.solver = new PhaseField2D(this.config);
           this.activeBackendLabel = 'CPU';
-          this.solverStatus = `CPU fallback: ${message}`;
+          this.solverStatus = `${t('cpuFallback')}: ${message}`;
         } else {
           this.solver = await PhaseField3DWorkerProxy.create(this.config);
-          this.activeBackendLabel = 'CPU · Worker';
-          this.solverStatus = `CPU worker fallback: ${message}`;
+          this.activeBackendLabel = ui('CPU · Worker', 'CPU · ワーカー');
+          this.solverStatus = `${ui('CPU worker fallback', 'CPUワーカーへ切替')}: ${message}`;
         }
       }
     } else {
       if (this.config.dimension === '2d') {
         this.solver = new PhaseField2D(this.config);
         this.activeBackendLabel = 'CPU';
-        this.solverStatus = 'CPU: explicit p / implicit T';
+        this.solverStatus = ui('CPU: explicit p / implicit T', 'CPU: p陽解法 / T陰解法');
       } else {
         this.solver = await PhaseField3DWorkerProxy.create(this.config);
-        this.activeBackendLabel = 'CPU · Worker';
-        this.solverStatus = 'CPU worker: 3D explicit p / implicit T';
+        this.activeBackendLabel = ui('CPU · Worker', 'CPU · ワーカー');
+        this.solverStatus = ui('CPU worker: 3D explicit p / implicit T', 'CPUワーカー: 3D p陽解法 / T陰解法');
       }
     }
     this.computeStepsPerSecond = 0;
@@ -606,9 +660,14 @@ export class PhaseFieldApp {
       const node = this.viewRoot?.querySelector<HTMLElement>(`[data-telemetry="${key}"]`);
       if (node) node.textContent = value;
     };
-    set('step', snapshot.step.toLocaleString());
+    set('step', snapshot.step.toLocaleString(localeTag()));
     set('time', snapshot.time.toFixed(2));
-    set('rate', this.running && this.computeStepsPerSecond > 0 ? `${this.computeStepsPerSecond.toFixed(1)} steps/s` : 'Idle');
+    set(
+      'rate',
+      this.running && this.computeStepsPerSecond > 0
+        ? `${this.computeStepsPerSecond.toFixed(1)} ${ui('steps/s', 'ステップ/秒')}`
+        : ui('Idle', '停止中')
+    );
     set(
       'grid',
       snapshot.dimension === '2d'
@@ -632,7 +691,7 @@ export class PhaseFieldApp {
 
   private updateRunButton(): void {
     this.viewRoot?.querySelectorAll<HTMLButtonElement>('[data-action="run"]').forEach((button) => {
-      button.textContent = this.running ? 'Pause' : 'Run';
+      button.textContent = this.running ? t('pause') : t('run');
     });
   }
 
@@ -650,9 +709,9 @@ export class PhaseFieldApp {
     const button = this.viewRoot?.querySelector<HTMLButtonElement>('[data-action="benchmark"]');
     if (button) {
       button.disabled = true;
-      button.textContent = 'Benchmarking...';
+      button.textContent = ui('Benchmarking...', '計測中...');
     }
-    if (status) status.textContent = 'Running CPU benchmark...';
+    if (status) status.textContent = ui('Running CPU benchmark...', 'CPUベンチマークを実行中...');
 
     const benchmarkConfig: PhaseFieldConfig = {
       ...this.config,
@@ -670,12 +729,15 @@ export class PhaseFieldApp {
       const availability = webGpuAvailability();
       if (!availability.available) {
         if (status) {
-          status.textContent = `CPU ${steps} steps: ${formatBenchmark(cpuMs, steps)}. WebGPU unavailable: ${availability.reason}`;
+          status.textContent = ui(
+            `CPU ${steps} steps: ${formatBenchmark(cpuMs, steps)}. WebGPU unavailable: ${availability.reason}`,
+            `CPU ${steps}ステップ: ${formatBenchmark(cpuMs, steps)}。WebGPUは利用不可: ${availability.reason}`
+          );
         }
         return;
       }
 
-      if (status) status.textContent = 'Running WebGPU benchmark...';
+      if (status) status.textContent = ui('Running WebGPU benchmark...', 'WebGPUベンチマークを実行中...');
       const gpuConfig: PhaseFieldConfig = { ...benchmarkConfig, solverBackend: 'webgpu-experimental' };
       if (gpuConfig.solverBackend === 'webgpu-experimental') applyWebGpuNumerics(gpuConfig);
       const gpuSteps = Math.max(1, Math.round(targetTime / gpuConfig.dt));
@@ -690,18 +752,24 @@ export class PhaseFieldApp {
         const phiDifference = compareFields(cpuSnapshot.phi, gpuSnapshot.phi);
         const temperatureDifference = compareFields(cpuSnapshot.temperature, gpuSnapshot.temperature);
         if (status) {
-          status.textContent = `${benchmarkConfig.dimension.toUpperCase()} same-time t=${compactNumber(targetTime)}: CPU ${steps} steps ${formatBenchmark(cpuMs, steps)}; WebGPU ${gpuSteps} steps ${formatBenchmark(gpuMs, gpuSteps)} at dt=${compactNumber(gpuConfig.dt)}; wall-clock speedup ${speedup.toFixed(2)}x; Δp max/RMS ${phiDifference.max.toExponential(2)}/${phiDifference.rms.toExponential(2)}, ΔT max/RMS ${temperatureDifference.max.toExponential(2)}/${temperatureDifference.rms.toExponential(2)}.`;
+          status.textContent = ui(
+            `${benchmarkConfig.dimension.toUpperCase()} same-time t=${compactNumber(targetTime)}: CPU ${steps} steps ${formatBenchmark(cpuMs, steps)}; WebGPU ${gpuSteps} steps ${formatBenchmark(gpuMs, gpuSteps)} at dt=${compactNumber(gpuConfig.dt)}; wall-clock speedup ${speedup.toFixed(2)}x; Δp max/RMS ${phiDifference.max.toExponential(2)}/${phiDifference.rms.toExponential(2)}, ΔT max/RMS ${temperatureDifference.max.toExponential(2)}/${temperatureDifference.rms.toExponential(2)}.`,
+            `${benchmarkConfig.dimension.toUpperCase()} 同一時刻 t=${compactNumber(targetTime)}: CPU ${steps}ステップ ${formatBenchmark(cpuMs, steps)}、WebGPU ${gpuSteps}ステップ ${formatBenchmark(gpuMs, gpuSteps)}（dt=${compactNumber(gpuConfig.dt)}）、実時間速度比 ${speedup.toFixed(2)}倍、Δp 最大/RMS ${phiDifference.max.toExponential(2)}/${phiDifference.rms.toExponential(2)}、ΔT 最大/RMS ${temperatureDifference.max.toExponential(2)}/${temperatureDifference.rms.toExponential(2)}。`
+          );
         }
       } finally {
         gpuSolver.dispose();
       }
     } catch (error: unknown) {
-      if (status) status.textContent = error instanceof Error ? `Benchmark failed: ${error.message}` : `Benchmark failed: ${String(error)}`;
+      if (status) {
+        const message = error instanceof Error ? error.message : String(error);
+        status.textContent = `${ui('Benchmark failed', 'ベンチマーク失敗')}: ${message}`;
+      }
     } finally {
       this.benchmarkRunning = false;
       if (button) {
         button.disabled = false;
-        button.textContent = 'Benchmark CPU / WebGPU';
+        button.textContent = ui('Benchmark CPU / WebGPU', 'CPU / WebGPU速度比較');
       }
     }
   }
@@ -719,7 +787,7 @@ export class PhaseFieldApp {
 
     const availability = webGpuAvailability();
     if (!availability.available) {
-      if (status) status.textContent = `dt sweep needs WebGPU: ${availability.reason}`;
+      if (status) status.textContent = `${ui('dt sweep needs WebGPU', 'dt比較にはWebGPUが必要です')}: ${availability.reason}`;
       buttons?.forEach((button) => {
         button.disabled = false;
       });
@@ -742,7 +810,12 @@ export class PhaseFieldApp {
     try {
       for (const dt of dtValues) {
         const steps = Math.max(1, Math.round(targetTime / dt));
-        if (status) status.textContent = `Running dt sweep: dt=${compactNumber(dt)}, steps=${steps}...`;
+        if (status) {
+          status.textContent = ui(
+            `Running dt sweep: dt=${compactNumber(dt)}, steps=${steps}...`,
+            `dt比較を実行中: dt=${compactNumber(dt)}、${steps}ステップ...`
+          );
+        }
         const testConfig: PhaseFieldConfig = { ...baseConfig, dt };
         const cpuConfig: PhaseFieldConfig = { ...testConfig, solverBackend: 'cpu' };
         const gpuConfig: PhaseFieldConfig = { ...testConfig, noiseReferenceDt: baseConfig.dt, solverBackend: 'webgpu-experimental' };
@@ -756,19 +829,28 @@ export class PhaseFieldApp {
           const gpuSnapshot = gpuSolver.snapshot();
           const phiDifference = compareFields(cpuSnapshot.phi, gpuSnapshot.phi);
           const temperatureDifference = compareFields(cpuSnapshot.temperature, gpuSnapshot.temperature);
-          const unstable = cpuStats.unstable || gpuStats.unstable ? ', unstable' : '';
+          const unstable = cpuStats.unstable || gpuStats.unstable ? ui(', unstable', '、不安定') : '';
           rows.push(
-            `dt=${compactNumber(dt)} (${steps} steps): Δp ${phiDifference.max.toExponential(2)}/${phiDifference.rms.toExponential(2)}, ΔT ${temperatureDifference.max.toExponential(2)}/${temperatureDifference.rms.toExponential(2)}${unstable}`
+            ui(
+              `dt=${compactNumber(dt)} (${steps} steps): Δp ${phiDifference.max.toExponential(2)}/${phiDifference.rms.toExponential(2)}, ΔT ${temperatureDifference.max.toExponential(2)}/${temperatureDifference.rms.toExponential(2)}${unstable}`,
+              `dt=${compactNumber(dt)}（${steps}ステップ）: Δp ${phiDifference.max.toExponential(2)}/${phiDifference.rms.toExponential(2)}、ΔT ${temperatureDifference.max.toExponential(2)}/${temperatureDifference.rms.toExponential(2)}${unstable}`
+            )
           );
         } finally {
           gpuSolver.dispose();
         }
       }
       if (status) {
-        status.textContent = `Implicit-vs-explicit sweep at K=${baseConfig.latentHeat.toFixed(2)}, noise=0, target t=${targetTime.toExponential(2)}: ${rows.join(' | ')}`;
+        status.textContent = ui(
+          `Implicit-vs-explicit sweep at K=${baseConfig.latentHeat.toFixed(2)}, noise=0, target t=${targetTime.toExponential(2)}: ${rows.join(' | ')}`,
+          `陰解法・陽解法dt比較 K=${baseConfig.latentHeat.toFixed(2)}、ノイズ=0、目標時刻 t=${targetTime.toExponential(2)}: ${rows.join(' | ')}`
+        );
       }
     } catch (error: unknown) {
-      if (status) status.textContent = error instanceof Error ? `dt sweep failed: ${error.message}` : `dt sweep failed: ${String(error)}`;
+      if (status) {
+        const message = error instanceof Error ? error.message : String(error);
+        status.textContent = `${ui('dt sweep failed', 'dt比較失敗')}: ${message}`;
+      }
     } finally {
       this.benchmarkRunning = false;
       buttons?.forEach((button) => {
@@ -810,27 +892,32 @@ export class PhaseFieldApp {
 }
 
 function shellTemplate(page: Page): string {
+  const locale = getLocale();
   return `
     <main class="app-shell">
       <header class="topbar">
         <div class="brand">
           <img class="brand-mark" src="/icon-192.png" alt="" aria-hidden="true" />
-          <div class="brand-title">Phase-Field Dendrite Lab</div>
+          <div class="brand-title">${t('appTitle')}</div>
         </div>
-        <nav class="nav-tabs" aria-label="Primary">
-          ${navButton('lab', 'Lab', page)}
-          ${navButton('reproduction', 'Reproductions', page)}
-          ${navButton('model', 'Model & Method', page)}
-          ${navButton('references', 'References', page)}
+        <nav class="nav-tabs" aria-label="${t('primaryNavigation')}">
+          ${navButton('lab', t('lab'), page)}
+          ${navButton('reproduction', t('reproductions'), page)}
+          ${navButton('model', t('model'), page)}
+          ${navButton('references', t('references'), page)}
         </nav>
         <div class="top-actions">
+          <div class="language-switch" role="group" aria-label="${t('language')}">
+            <button type="button" data-locale="en" aria-pressed="${locale === 'en'}">EN</button>
+            <button type="button" data-locale="ja" aria-pressed="${locale === 'ja'}">日本語</button>
+          </div>
           ${githubLinkTemplate()}
-          <div class="top-status"><span class="status-dot"></span><span>Qualitative browser solver</span></div>
+          <div class="top-status"><span class="status-dot"></span><span>${t('qualitativeSolver')}</span></div>
         </div>
       </header>
       <section class="view-root" data-view-root></section>
       <footer class="site-footer">
-        <span>&copy; 2026 dueyama. Released under the MIT License.</span>
+        <span>${t('copyright')}</span>
         ${footerLinksTemplate()}
       </footer>
     </main>
@@ -840,9 +927,10 @@ function shellTemplate(page: Page): string {
 function githubLinkTemplate(): string {
   const icon = githubIconSvg();
   if (!APP_LINKS.github) {
-    return `<span class="top-icon-link is-disabled" aria-label="GitHub repository URL pending" title="GitHub repository URL pending">${icon}</span>`;
+    const pending = isJapanese() ? 'GitHubリポジトリURLは準備中です' : 'GitHub repository URL pending';
+    return `<span class="top-icon-link is-disabled" aria-label="${pending}" title="${pending}">${icon}</span>`;
   }
-  return `<a class="top-icon-link" href="${APP_LINKS.github}" target="_blank" rel="noreferrer" aria-label="GitHub repository">${icon}</a>`;
+  return `<a class="top-icon-link" href="${APP_LINKS.github}" target="_blank" rel="noreferrer" aria-label="${t('githubRepository')}">${icon}</a>`;
 }
 
 function githubIconSvg(): string {
@@ -851,13 +939,17 @@ function githubIconSvg(): string {
 
 function footerLinksTemplate(): string {
   const links = [
-    APP_LINKS.liveSite ? `<a href="${APP_LINKS.liveSite}" target="_blank" rel="noreferrer">Live site</a>` : ''
+    APP_LINKS.liveSite ? `<a href="${APP_LINKS.liveSite}" target="_blank" rel="noreferrer">${t('liveSite')}</a>` : ''
   ].filter(Boolean);
-  return links.length > 0 ? `<nav class="site-footer-links" aria-label="Project links">${links.join('')}</nav>` : '';
+  return links.length > 0 ? `<nav class="site-footer-links" aria-label="${t('projectLinks')}">${links.join('')}</nav>` : '';
 }
 
 function navButton(page: Page, label: string, active: Page): string {
   return `<button class="nav-tab" data-page="${page}" aria-selected="${page === active}">${label}</button>`;
+}
+
+function ui(english: string, japanese: string): string {
+  return isJapanese() ? japanese : english;
 }
 
 function labTemplate(config: PhaseFieldConfig, running: boolean, solverStatus: string, benchmarkRunning: boolean): string {
@@ -868,70 +960,70 @@ function labTemplate(config: PhaseFieldConfig, running: boolean, solverStatus: s
   const dtRange = dtSliderRange(config);
   return `
     <div class="lab-layout">
-      <section class="visual-stage ${hasReproducedFigure ? 'has-comparison' : ''}" aria-label="Simulation view">
+      <section class="visual-stage ${hasReproducedFigure ? 'has-comparison' : ''}" aria-label="${ui('Simulation view', 'シミュレーション表示')}">
         <div class="viewport-stack ${hasReproducedFigure ? 'with-comparison' : ''}">
           <div class="viewport-panel" data-viewport>
             <div class="viewport-overlay"></div>
-            <div class="active-backend" data-active-backend>Initializing</div>
+            <div class="active-backend" data-active-backend>${t('initializing')}</div>
           </div>
           ${comparisonPanel(config)}
         </div>
         <div class="telemetry">
-          ${telemetryItem('Step', 'step')}
-          ${telemetryItem('Time', 'time')}
-          ${telemetryItem('Compute', 'rate')}
-          ${telemetryItem('Mesh', 'grid')}
+          ${telemetryItem(ui('Step', 'ステップ'), 'step')}
+          ${telemetryItem(ui('Time', '時刻'), 'time')}
+          ${telemetryItem(ui('Compute', '計算速度'), 'rate')}
+          ${telemetryItem(t('mesh'), 'grid')}
           ${telemetryItem('p min / max', 'phi')}
           ${telemetryItem('T min / max', 'temp')}
         </div>
       </section>
-      <div class="mobile-run-dock" aria-label="Quick simulation controls">
-        <button class="primary" data-action="run">${running ? 'Pause' : 'Run'}</button>
-        <button data-action="step">Step</button>
-        <button data-action="reset">Reset</button>
+      <div class="mobile-run-dock" aria-label="${ui('Quick simulation controls', 'クイック計算操作')}">
+        <button class="primary" data-action="run">${running ? t('pause') : t('run')}</button>
+        <button data-action="step">${t('step')}</button>
+        <button data-action="reset">${t('reset')}</button>
       </div>
-      <aside class="inspector" aria-label="Simulation controls">
+      <aside class="inspector" aria-label="${ui('Simulation controls', 'シミュレーション操作')}">
         <div class="inspector-inner">
           <section class="control-section">
-            <div class="section-title"><span>Experiment</span><span>${config.dimension.toUpperCase()}</span></div>
+            <div class="section-title"><span>${ui('Experiment', '実験条件')}</span><span>${config.dimension.toUpperCase()}</span></div>
             <div class="section-body">
               <div class="control-row">
-                <label class="control-label" for="preset">Preset</label>
+                <label class="control-label" for="preset">${ui('Preset', 'プリセット')}</label>
                 <select id="preset" data-field="preset">
-                  ${labPresets.map((preset) => `<option value="${preset.id}" ${preset.id === config.id ? 'selected' : ''}>${preset.name}</option>`).join('')}
+                  ${labPresets.map((preset) => `<option value="${preset.id}" ${preset.id === config.id ? 'selected' : ''}>${localizedPresetName(preset)}</option>`).join('')}
                 </select>
               </div>
               ${presetNote(config)}
-              <div class="segmented" aria-label="Dimension">
+              <div class="segmented" aria-label="${ui('Dimension', '次元')}">
                 <button data-dimension="2d" class="${config.dimension === '2d' ? 'active' : ''}">2D</button>
                 <button data-dimension="3d" class="${config.dimension === '3d' ? 'active' : ''}">3D</button>
               </div>
               <div class="action-row">
-                <button class="primary" data-action="run">${running ? 'Pause' : 'Run'}</button>
-                <button data-action="reset">Reset</button>
+                <button class="primary" data-action="run">${running ? t('pause') : t('run')}</button>
+                <button data-action="reset">${t('reset')}</button>
               </div>
               <div class="action-row">
-                <button data-action="step">Step</button>
-                <button data-action="random-seed">New seed</button>
+                <button data-action="step">${t('step')}</button>
+                <button data-action="random-seed">${t('newSeed')}</button>
               </div>
-              <div class="warning" data-warning>Numerical instability detected. Reduce dt, noise, anisotropy strength, or mesh size.</div>
+              <div class="warning" data-warning>${ui('Numerical instability detected. Reduce dt, noise, anisotropy strength, or mesh size.', '数値的不安定性を検出しました。dt、ノイズ、異方性強度、またはメッシュ数を下げてください。')}</div>
             </div>
           </section>
 
           <section class="control-section">
-            <div class="section-title"><span>Numerics</span><span>${solverBackendLabel(config)}</span></div>
+            <div class="section-title"><span>${ui('Numerics', '数値計算')}</span><span>${solverBackendLabel(config)}</span></div>
             <div class="section-body">
               <div class="control-row">
-                <label class="control-label" for="solverBackend">Solver backend</label>
+                <label class="control-label" for="solverBackend">${ui('Solver backend', '計算バックエンド')}</label>
                 <select id="solverBackend" data-field="solverBackend">
-                  ${option('cpu', 'CPU implicit T', config.solverBackend ?? 'cpu')}
-                  ${option('webgpu-experimental', 'WebGPU experimental', config.solverBackend ?? 'cpu')}
+                  ${option('cpu', t('cpuImplicitT'), config.solverBackend ?? 'cpu')}
+                  ${option('webgpu-experimental', t('webGpuExperimental'), config.solverBackend ?? 'cpu')}
                 </select>
               </div>
-              <div class="solver-status" data-solver-status>${escapeHtml(solverStatus)}</div>
+              <div class="solver-status" data-solver-status>${escapeHtml(localizedSolverStatus(solverStatus))}</div>
               <div class="benchmark-status" data-solver-diagnostics>${formatSolverDiagnostics(null, config)}</div>
               ${numberControl(
-                'Steps / frame',
+                ui('Steps / frame', '1フレームのステップ数'),
                 'stepsPerFrame',
                 config.stepsPerFrame,
                 1,
@@ -943,71 +1035,71 @@ function labTemplate(config: PhaseFieldConfig, running: boolean, solverStatus: s
               )}
               ${gridSizeControl(config.dimension, gridOptions, config.nx, config.ny, config.nz)}
               <div class="control-row">
-                <label class="control-label" for="boundaryCondition">Boundary</label>
+                <label class="control-label" for="boundaryCondition">${t('boundary')}</label>
                 <select id="boundaryCondition" data-field="boundaryCondition">
-                  ${option('neumann', 'Adiabatic / no-flux', config.boundaryCondition)}
-                  ${option('fixed-temperature', 'Fixed temperature edge', config.boundaryCondition)}
-                  ${option('left-fixed-temperature', 'Left wall fixed T', config.boundaryCondition)}
+                  ${option('neumann', ui('Adiabatic / no-flux', '断熱・流束なし'), config.boundaryCondition)}
+                  ${option('fixed-temperature', ui('Fixed temperature edge', '外周温度固定'), config.boundaryCondition)}
+                  ${option('left-fixed-temperature', ui('Left wall fixed T', '左壁温度固定'), config.boundaryCondition)}
                 </select>
               </div>
               ${rangeControl('dt', 'dt', config.dt, dtRange.min, dtRange.max, dtRange.step, formatDt(config.dt))}
-              ${numberControl('Seed', 'seed', config.seed, 1, 999999)}
+              ${numberControl(ui('Seed', '乱数シード'), 'seed', config.seed, 1, 999999)}
               <div class="action-row single">
-                <button data-action="benchmark" ${benchmarkRunning ? 'disabled' : ''}>${benchmarkRunning ? 'Benchmarking...' : 'Benchmark CPU / WebGPU'}</button>
+                <button data-action="benchmark" ${benchmarkRunning ? 'disabled' : ''}>${benchmarkRunning ? ui('Benchmarking...', '計測中...') : ui('Benchmark CPU / WebGPU', 'CPU / WebGPU速度比較')}</button>
               </div>
               <div class="action-row single">
-                <button data-action="dt-sweep" ${benchmarkRunning ? 'disabled' : ''}>dt sweep at current K</button>
+                <button data-action="dt-sweep" ${benchmarkRunning ? 'disabled' : ''}>${ui('dt sweep at current K', '現在のKでdt比較')}</button>
               </div>
               <div class="benchmark-status" data-benchmark-status>${webGpuStatusText(config)}</div>
             </div>
           </section>
 
           <section class="control-section">
-            <div class="section-title"><span>Physics</span><span>${config.anisotropyMode}</span></div>
+            <div class="section-title"><span>${ui('Physics', '物理パラメータ')}</span><span>${localizedAnisotropyMode(config.anisotropyMode)}</span></div>
             <div class="section-body">
-              ${rangeControl('Anisotropy', 'anisotropyStrength', config.anisotropyStrength, 0, 0.22, 0.001, config.anisotropyStrength.toFixed(3))}
-              ${rangeControl('Latent heat', 'latentHeat', config.latentHeat, 0, latentHeatMax, 0.01, config.latentHeat.toFixed(2))}
-              ${rangeControl('Equilibrium T', 'undercooling', config.undercooling, 0.05, 1.2, 0.01, config.undercooling.toFixed(2))}
-              ${rangeControl('Noise', 'noiseAmplitude', config.noiseAmplitude, 0, 0.06, 0.001, config.noiseAmplitude.toFixed(3))}
+              ${rangeControl(t('anisotropy'), 'anisotropyStrength', config.anisotropyStrength, 0, 0.22, 0.001, config.anisotropyStrength.toFixed(3))}
+              ${rangeControl(ui('Latent heat', '潜熱 K'), 'latentHeat', config.latentHeat, 0, latentHeatMax, 0.01, config.latentHeat.toFixed(2))}
+              ${rangeControl(ui('Equilibrium T', '平衡温度 T'), 'undercooling', config.undercooling, 0.05, 1.2, 0.01, config.undercooling.toFixed(2))}
+              ${rangeControl(t('noise'), 'noiseAmplitude', config.noiseAmplitude, 0, 0.06, 0.001, config.noiseAmplitude.toFixed(3))}
             </div>
           </section>
 
           <section class="control-section">
-            <div class="section-title"><span>View</span><span>${renderModeLabel(config.renderMode3D)}</span></div>
+            <div class="section-title"><span>${ui('View', '表示')}</span><span>${renderModeLabel(config.renderMode3D)}</span></div>
             <div class="section-body">
               <div class="control-row">
-                <label class="control-label" for="viewMode">Scalar view</label>
+                <label class="control-label" for="viewMode">${ui('Scalar view', 'スカラー場')}</label>
                 <select id="viewMode" data-field="viewMode">
-                  ${option('phase', 'Phase', config.viewMode)}
-                  ${option('temperature', 'Temperature', config.viewMode)}
-                  ${option('combined', 'Combined', config.viewMode)}
+                  ${option('phase', ui('Phase', '相 p'), config.viewMode)}
+                  ${option('temperature', ui('Temperature', '温度 T'), config.viewMode)}
+                  ${option('combined', ui('Combined', '重ね合わせ'), config.viewMode)}
                 </select>
               </div>
               <div class="control-row">
-                <label class="control-label" for="renderMode3D">3D render mode</label>
+                <label class="control-label" for="renderMode3D">${ui('3D render mode', '3D表示方式')}</label>
                 <select id="renderMode3D" data-field="renderMode3D" ${config.dimension === '2d' ? 'disabled' : ''}>
-                  ${option('surface', 'Isosurface', config.renderMode3D)}
-                  ${option('slices', 'Slices', config.renderMode3D)}
-                  ${option('volume', 'Volume', config.renderMode3D)}
+                  ${option('surface', t('isosurface'), config.renderMode3D)}
+                  ${option('slices', t('slices'), config.renderMode3D)}
+                  ${option('volume', t('volume'), config.renderMode3D)}
                 </select>
               </div>
               <label class="toggle-row ${config.dimension === '2d' ? 'disabled' : ''}" for="surfaceFrameGuarantee3D">
                 <span>
-                  <span class="toggle-title">Surface guarantee</span>
-                  <span class="toggle-hint">Wait for one 3D surface update before the next compute frame.</span>
+                  <span class="toggle-title">${ui('Surface guarantee', '等値面更新を保証')}</span>
+                  <span class="toggle-hint">${ui('Wait for one 3D surface update before the next compute frame.', '次の計算フレームへ進む前に、3D等値面を1回更新します。')}</span>
                 </span>
                 <input id="surfaceFrameGuarantee3D" type="checkbox" data-field="surfaceFrameGuarantee3D" ${config.surfaceFrameGuarantee3D ? 'checked' : ''} ${config.dimension === '2d' ? 'disabled' : ''}>
               </label>
               <div class="action-row">
-                <button data-action="stl" ${config.dimension === '2d' ? 'disabled' : ''}>STL surface</button>
-                <button data-action="stl-mirror" ${config.dimension === '2d' ? 'disabled' : ''}>STL x-y mirror</button>
+                <button data-action="stl" ${config.dimension === '2d' ? 'disabled' : ''}>${ui('STL surface', 'STL等値面')}</button>
+                <button data-action="stl-mirror" ${config.dimension === '2d' ? 'disabled' : ''}>${ui('STL x-y mirror', 'STL x-y反転')}</button>
               </div>
               <div class="action-row">
-                <button data-action="screenshot">Screenshot</button>
-                <button data-action="save-state">State file</button>
+                <button data-action="screenshot">${ui('Screenshot', 'スクリーンショット')}</button>
+                <button data-action="save-state">${ui('State file', '場データ')}</button>
               </div>
               <div class="action-row single">
-                <button data-action="export">Params JSON</button>
+                <button data-action="export">${ui('Params JSON', 'パラメータJSON')}</button>
               </div>
             </div>
           </section>
@@ -1018,17 +1110,17 @@ function labTemplate(config: PhaseFieldConfig, running: boolean, solverStatus: s
 }
 
 function presetNote(config: PhaseFieldConfig): string {
-  const paperDetails = config.paperReference?.details ?? [];
+  const paperDetails = localizedPaperDetails(config);
   const geometryDetails = [
-    `Mesh: ${meshLabel(config)}`,
-    `Domain: ${domainSizeLabel(config)}`,
+    `${t('mesh')}: ${meshLabel(config)}`,
+    `${t('domain')}: ${domainSizeLabel(config)}`,
     `dx = ${compactNumber(config.dx)}, dt = ${compactNumber(config.dt)}`,
-    `Initial size: ${nucleusSizeLabel(config)}`
+    `${ui('Initial size', '初期サイズ')}: ${nucleusSizeLabel(config)}`
   ];
   return `
     <div class="preset-note">
-      ${config.description ? `<p>${renderPresetDetail(config.description)}</p>` : ''}
-      <div class="preset-paper-label">Simulation geometry</div>
+      ${config.description ? `<p>${renderPresetDetail(localizedPresetDescription(config))}</p>` : ''}
+      <div class="preset-paper-label">${ui('Simulation geometry', '計算形状')}</div>
       <ul>${geometryDetails.map((detail) => `<li>${renderPresetDetail(detail)}</li>`).join('')}</ul>
       ${
         config.paperReference
@@ -1133,13 +1225,13 @@ function comparisonPanel(config: PhaseFieldConfig): string {
   return `
     <aside class="comparison-panel">
       <div class="comparison-header">
-        <span>Reproduced figure</span>
-        <span>CPU implicit-T final state</span>
+        <span>${ui('Reproduced figure', '再現図')}</span>
+        <span>${ui('CPU implicit-T final state', 'CPU・T陰解法の最終状態')}</span>
       </div>
       <div class="comparison-image-box">
-        <img src="${thumbnail.src}" alt="${config.paperReference?.label ?? config.name} reproduced final state" />
+        <img src="${thumbnail.src}" alt="${config.paperReference?.label ?? localizedPresetName(config)} ${ui('reproduced final state', '再現した最終状態')}" />
       </div>
-      <p class="comparison-caption">Generated with the CPU implicit-temperature solver from the selected preset parameters.</p>
+      <p class="comparison-caption">${ui('Generated with the CPU implicit-temperature solver from the selected preset parameters.', '選択したプリセットをCPU・T陰解法ソルバーで計算した結果です。')}</p>
     </aside>
   `;
 }
@@ -1163,7 +1255,7 @@ function gridSizeControl(dimension: Dimension, options: number[], nx: number, ny
   const allOptions = [...new Set([...squareOptions, currentValue])];
   return `
     <div class="control-row">
-      <label class="control-label" for="gridSize">Mesh size</label>
+      <label class="control-label" for="gridSize">${ui('Mesh size', 'メッシュ数')}</label>
       <select id="gridSize" data-field="gridSize">
         ${allOptions
           .map((item) => {
@@ -1196,15 +1288,57 @@ function formatDt(value: number): string {
 }
 
 function solverBackendLabel(config: PhaseFieldConfig): string {
-  const backend = (config.solverBackend ?? 'cpu') === 'webgpu-experimental' ? 'WebGPU trial' : 'CPU';
+  const backend = (config.solverBackend ?? 'cpu') === 'webgpu-experimental' ? ui('WebGPU trial', 'WebGPU実験版') : 'CPU';
   return config.dimension === '3d' ? `${backend} 3D` : backend;
+}
+
+function localizedAnisotropyMode(mode: PhaseFieldConfig['anisotropyMode']): string {
+  if (!isJapanese()) return mode;
+  if (mode === 'isotropic') return '等方';
+  if (mode === 'fourFold') return '4回対称';
+  if (mode === 'sixFold') return '6回対称';
+  return '立方対称';
+}
+
+function localizedSolverStatus(status: string): string {
+  const pairs: Array<[string, string]> = [
+    ['Initializing WebGPU...', 'WebGPUを初期化中...'],
+    ['Initializing', '初期化中'],
+    ['CPU: explicit p / implicit T', 'CPU: p陽解法 / T陰解法'],
+    ['CPU worker: 3D explicit p / implicit T', 'CPUワーカー: 3D p陽解法 / T陰解法'],
+    ['WebGPU experimental 2D: explicit p / explicit T', 'WebGPU実験版2D: p陽解法 / T陽解法']
+  ];
+  for (const [english, japanese] of pairs) {
+    if (isJapanese() && status === english) return japanese;
+    if (!isJapanese() && status === japanese) return english;
+  }
+  const runtime3d = status.match(/^(?:WebGPU experimental 3D: explicit p \/ explicit T · |WebGPU実験版3D: p陽解法 \/ T陽解法 · )(.+?)(?: batch|バッチ)$/);
+  if (runtime3d) {
+    return ui(
+      `WebGPU experimental 3D: explicit p / explicit T · ${runtime3d[1]} batch`,
+      `WebGPU実験版3D: p陽解法 / T陽解法 · ${runtime3d[1]}バッチ`
+    );
+  }
+  return status;
+}
+
+function localizedActiveBackendLabel(label: string): string {
+  if (label === 'CPU · Worker' || label === 'CPU · ワーカー') {
+    return ui('CPU · Worker', 'CPU · ワーカー');
+  }
+  return label;
+}
+
+function solverStoppedMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return `${ui('Solver stopped', 'ソルバー停止')}: ${message}`;
 }
 
 function formatSolverDiagnostics(stats: StepStats | null, config: PhaseFieldConfig): string {
   if (!stats) {
     return config.solverBackend === 'webgpu-experimental'
-      ? 'GPU diagnostics update after each compute batch.'
-      : 'ICCG convergence and pre-clamp diagnostics update after stepping.';
+      ? ui('GPU diagnostics update after each compute batch.', 'GPU診断値は計算バッチごとに更新されます。')
+      : ui('ICCG convergence and pre-clamp diagnostics update after stepping.', 'ICCG収束値とクランプ前診断はステップ後に更新されます。');
   }
 
   const parts: string[] = [];
@@ -1213,34 +1347,56 @@ function formatSolverDiagnostics(stats: StepStats | null, config: PhaseFieldConf
       stats.temperatureSolverResidual !== undefined && Number.isFinite(stats.temperatureSolverResidual)
         ? stats.temperatureSolverResidual.toExponential(2)
         : 'n/a';
-    parts.push(`T solver ${stats.temperatureSolverIterations} iterations, residual ${residual}`);
+    parts.push(
+      ui(
+        `T solver ${stats.temperatureSolverIterations} iterations, residual ${residual}`,
+        `Tソルバー ${stats.temperatureSolverIterations}反復、残差 ${residual}`
+      )
+    );
   }
   const clippedPhi = stats.clampedPhiCells ?? 0;
   const clippedTemperature = stats.clampedTemperatureCells ?? 0;
-  parts.push(`pre-clamp hits p=${clippedPhi.toLocaleString()}, T=${clippedTemperature.toLocaleString()}`);
+  parts.push(
+    ui(
+      `pre-clamp hits p=${clippedPhi.toLocaleString(localeTag())}, T=${clippedTemperature.toLocaleString(localeTag())}`,
+      `クランプ前の範囲外セル p=${clippedPhi.toLocaleString(localeTag())}, T=${clippedTemperature.toLocaleString(localeTag())}`
+    )
+  );
   return parts.join('; ');
 }
 
 function instabilityWarning(stats: StepStats): string {
   if (stats.temperatureSolverConverged === false) {
-    return `Temperature solve did not converge (residual ${stats.temperatureSolverResidual?.toExponential(2) ?? 'unknown'}).`;
+    return ui(
+      `Temperature solve did not converge (residual ${stats.temperatureSolverResidual?.toExponential(2) ?? 'unknown'}).`,
+      `温度計算が収束しませんでした（残差 ${stats.temperatureSolverResidual?.toExponential(2) ?? '不明'}）。`
+    );
   }
   if ((stats.clampedPhiCells ?? 0) > 0 || (stats.clampedTemperatureCells ?? 0) > 0) {
-    return `Numerical instability detected before clamping: p=${stats.rawMinPhi?.toExponential(2) ?? '?'}..${stats.rawMaxPhi?.toExponential(2) ?? '?'}, T=${stats.rawMinTemperature?.toExponential(2) ?? '?'}..${stats.rawMaxTemperature?.toExponential(2) ?? '?'}.`;
+    return ui(
+      `Numerical instability detected before clamping: p=${stats.rawMinPhi?.toExponential(2) ?? '?'}..${stats.rawMaxPhi?.toExponential(2) ?? '?'}, T=${stats.rawMinTemperature?.toExponential(2) ?? '?'}..${stats.rawMaxTemperature?.toExponential(2) ?? '?'}.`,
+      `クランプ前に数値的不安定性を検出しました: p=${stats.rawMinPhi?.toExponential(2) ?? '?'}..${stats.rawMaxPhi?.toExponential(2) ?? '?'}, T=${stats.rawMinTemperature?.toExponential(2) ?? '?'}..${stats.rawMaxTemperature?.toExponential(2) ?? '?'}。`
+    );
   }
-  return 'Numerical instability detected. Reduce dt, noise, anisotropy strength, or mesh size.';
+  return ui(
+    'Numerical instability detected. Reduce dt, noise, anisotropy strength, or mesh size.',
+    '数値的不安定性を検出しました。dt、ノイズ、異方性強度、またはメッシュ数を下げてください。'
+  );
 }
 
 function webGpuStatusText(config: PhaseFieldConfig): string {
   const availability = webGpuAvailability();
-  if (availability.available) return `WebGPU available. ${explicitTStabilityText(config)}`;
-  return `WebGPU unavailable here: ${availability.reason}`;
+  if (availability.available) return `${ui('WebGPU available.', 'WebGPUを利用できます。')} ${explicitTStabilityText(config)}`;
+  return `${ui('WebGPU unavailable here:', 'この環境ではWebGPUを利用できません:')} ${availability.reason}`;
 }
 
 function explicitTStabilityText(config: PhaseFieldConfig): string {
   const currentLimit = explicitTStabilityLimit(config, config.dimension === '3d' ? 3 : 2);
   const k2002Limit = explicitTStabilityLimit({ ...config, latentHeat: 3.5, dx: 0.03, temperatureDiffusivity: 1, tau: 0.0003 }, 3);
-  return `Explicit T estimate: current dtmax≈${compactNumber(currentLimit)}, K=3.5 3D dtmax≈${compactNumber(k2002Limit)}; 3D WebGPU uses dt≈0.00005 and large steps/frame for throughput.`;
+  return ui(
+    `Explicit T estimate: current dtmax≈${compactNumber(currentLimit)}, K=3.5 3D dtmax≈${compactNumber(k2002Limit)}; 3D WebGPU uses dt≈0.00005 and large steps/frame for throughput.`,
+    `T陽解法の推定安定限界: 現在 dtmax≈${compactNumber(currentLimit)}、K=3.5の3Dでは dtmax≈${compactNumber(k2002Limit)}。3D WebGPUは dt≈0.00005 と大きなsteps/frameを使います。`
+  );
 }
 
 function explicitTStabilityLimit(config: PhaseFieldConfig, dimensions: 2 | 3): number {
@@ -1285,8 +1441,9 @@ function option<T extends string>(value: T, label: string, current: T): string {
 }
 
 function renderModeLabel(mode: RenderMode3D): string {
-  if (mode === 'surface') return 'Isosurface';
-  return mode;
+  if (mode === 'surface') return t('isosurface');
+  if (mode === 'slices') return t('slices');
+  return t('volume');
 }
 
 type ReproductionGroup = {
@@ -1467,17 +1624,26 @@ function reproductionTemplate(): string {
   return `
     <article class="content-page reproduction-page">
       <div class="content-inner reproduction-inner">
-        <h1>Reproductions</h1>
-        <p>This page collects simulator-generated outputs for the Kobayashi references. It does not distribute paper figures. K1993 entries show simulator-generated final-state thumbnails, and K2002 entries use public CPU/WebGL animations, final-state viewers, and STL isosurfaces generated from the listed presets.</p>
-        <p class="reproduction-note">All media on this page is simulator-generated. CPU implicit-temperature output is the reproduction sample path; WebGPU thumbnails show the experimental explicit-temperature backend. The comparison is qualitative; exact reproduction is not claimed. In the current Fig.9 low-noise cases, WebGPU suppresses side branching relative to the CPU reference.</p>
-        <nav class="reproduction-section-nav" aria-label="Reproduction sections">
+        <h1>${t('reproductions')}</h1>
+        <p>${ui(
+          'This page collects simulator-generated outputs for the Kobayashi references. It does not distribute paper figures. K1993 entries show simulator-generated final-state thumbnails, and K2002 entries use public CPU/WebGL animations, final-state viewers, and STL isosurfaces generated from the listed presets.',
+          'このページには、小林の文献を対象に本シミュレータで生成した結果をまとめています。論文の図そのものは掲載していません。K1993ではシミュレータ生成の最終状態画像を、K2002では公開用CPU/WebGLアニメーション、最終状態ビューア、プリセットから生成したSTL等値面を示します。'
+        )}</p>
+        <p class="reproduction-note">${ui(
+          'All media on this page is simulator-generated. CPU implicit-temperature output is the reproduction sample path; WebGPU thumbnails show the experimental explicit-temperature backend. The comparison is qualitative; exact reproduction is not claimed. In the current Fig.9 low-noise cases, WebGPU suppresses side branching relative to the CPU reference.',
+          'このページのメディアはすべて本シミュレータで生成しています。再現用サンプルにはCPU・温度陰解法を用い、WebGPU画像は実験的な温度陽解法の結果です。比較は定性的で、厳密な一致を主張するものではありません。現在のFig.9低ノイズ条件では、WebGPU結果のサイドブランチがCPU基準より少なくなります。'
+        )}</p>
+        <nav class="reproduction-section-nav" aria-label="${ui('Reproduction sections', '再現図の区分')}">
           <a href="#k1993-reproductions">K1993</a>
           <a href="#k2002-reproductions">K2002</a>
         </nav>
         <section class="reproduction-family" id="k2002-reproductions">
           <div class="reproduction-family-header">
-            <h2>K2002 3D Reproduction</h2>
-        <p>Public animation and final-state assets generated by this simulator's CPU implicit-temperature solver and three.js/WebGL renderer. The exact 3D numerical conditions were not available, so these parameters are estimates selected by qualitative comparison with the K2002 figure. Select the Lab action to load the same preset parameters for an interactive rerun.</p>
+            <h2>${ui('K2002 3D Reproduction', 'K2002 3D再現')}</h2>
+        <p>${ui(
+          "Public animation and final-state assets generated by this simulator's CPU implicit-temperature solver and three.js/WebGL renderer. The exact 3D numerical conditions were not available, so these parameters are estimates selected by qualitative comparison with the K2002 figure. Select the Lab action to load the same preset parameters for an interactive rerun.",
+          '本シミュレータのCPU・温度陰解法ソルバーとthree.js/WebGLレンダラーで生成した公開アニメーションおよび最終状態です。3Dの厳密な数値条件が得られなかったため、K2002の図との定性的比較から推定したパラメータを使用しています。「ラボで開く」を選ぶと、同じプリセットで再計算できます。'
+        )}</p>
           </div>
           <div class="k2002-media-grid">
             ${k2002ReproductionAssets.map(k2002AssetCardTemplate).join('')}
@@ -1485,23 +1651,26 @@ function reproductionTemplate(): string {
           <div class="k2002-state-viewer" data-k2002-state-viewer hidden>
             <div class="k2002-state-header">
               <div>
-                <div class="reproduction-figure">Interactive final state</div>
-                <h3 data-k2002-state-title>Final state viewer</h3>
+                <div class="reproduction-figure">${ui('Interactive final state', '操作可能な最終状態')}</div>
+                <h3 data-k2002-state-title>${t('finalStateViewer')}</h3>
               </div>
-              <p data-k2002-state-status>Select View final state on a K2002 card.</p>
+              <p data-k2002-state-status>${ui('Select View final state on a K2002 card.', 'K2002カードの「最終状態を表示」を選んでください。')}</p>
             </div>
-            <div class="k2002-state-toolbar" aria-label="Final state render mode">
-              <button type="button" data-k2002-render-mode="surface" aria-selected="true">Isosurface</button>
-              <button type="button" data-k2002-render-mode="slices" aria-selected="false">Slices</button>
-              <button type="button" data-k2002-render-mode="volume" aria-selected="false">Volume</button>
+            <div class="k2002-state-toolbar" aria-label="${ui('Final state render mode', '最終状態の表示方法')}">
+              <button type="button" data-k2002-render-mode="surface" aria-selected="true">${t('isosurface')}</button>
+              <button type="button" data-k2002-render-mode="slices" aria-selected="false">${t('slices')}</button>
+              <button type="button" data-k2002-render-mode="volume" aria-selected="false">${t('volume')}</button>
             </div>
             <div class="k2002-state-host" data-k2002-state-host></div>
           </div>
         </section>
         <section class="reproduction-family" id="k1993-reproductions">
           <div class="reproduction-family-header">
-            <h2>K1993 2D Reproduction</h2>
-            <p>Paper-target planar, cellular, dendrite, anisotropy, and noise-sensitivity presets. Select a card to open the same parameter set in Lab.</p>
+            <h2>${ui('K1993 2D Reproduction', 'K1993 2D再現')}</h2>
+            <p>${ui(
+              'Paper-target planar, cellular, dendrite, anisotropy, and noise-sensitivity presets. Select a card to open the same parameter set in Lab.',
+              '論文を対象とした平面成長、セル状成長、デンドライト、異方性、ノイズ感度のプリセットです。カードを選ぶと同じパラメータをラボで開きます。'
+            )}</p>
           </div>
         <div class="reproduction-groups">
           ${kobayashi1993ReproductionGroups.map(reproductionGroupTemplate).join('')}
@@ -1524,20 +1693,20 @@ function k2002AssetCardTemplate(asset: K2002Asset): string {
       </div>
       <div class="k2002-asset-copy">
         <div class="reproduction-figure">K2002 Fig.9</div>
-        <h3>${asset.title}</h3>
-        <p>${asset.subtitle}</p>
+        <h3>${k2002AssetTitle(asset)}</h3>
+        <p>${k2002AssetSubtitle(asset)}</p>
         <dl class="reproduction-params">
           ${rows
-            .filter((row) => ['mesh', 'domain', 'dx / dt', 'K / tau', 'anisotropy', 'noise', 'nucleus'].includes(row.label))
+            .filter((_, index) => [0, 1, 2, 4, 5, 6, 7].includes(index))
             .map((row) => `<div><dt>${row.label}</dt><dd>${row.value}</dd></div>`)
             .join('')}
         </dl>
         <ul class="k2002-asset-notes">
-          ${asset.notes.map((note) => `<li>${note}</li>`).join('')}
+          ${k2002AssetNotes(asset).map((note) => `<li>${note}</li>`).join('')}
         </ul>
         <div class="k2002-asset-actions">
-          <button type="button" data-reproduction-state="${asset.state}" data-reproduction-state-preset="${asset.presetId}">View final state</button>
-          <button type="button" data-reproduction-preset="${asset.presetId}">Open in Lab</button>
+          <button type="button" data-reproduction-state="${asset.state}" data-reproduction-state-preset="${asset.presetId}">${ui('View final state', '最終状態を表示')}</button>
+          <button type="button" data-reproduction-preset="${asset.presetId}">${ui('Open in Lab', 'ラボで開く')}</button>
           <a href="${asset.video}" download>MP4</a>
           <a href="${asset.stl}" download>STL</a>
         </div>
@@ -1556,8 +1725,8 @@ function reproductionGroupTemplate(group: ReproductionGroup): string {
   return `
     <section class="reproduction-group">
       <div class="reproduction-group-header">
-        <h2>${group.title}</h2>
-        <p>${group.description}</p>
+        <h2>${localizedReproductionGroup(group).title}</h2>
+        <p>${localizedReproductionGroup(group).description}</p>
       </div>
       <div class="reproduction-card-grid">
         ${cards}
@@ -1572,7 +1741,7 @@ function reproductionCardTemplate(config: PhaseFieldConfig): string {
   const figureLabel = shortFigureLabel(config.paperReference?.label ?? config.name);
   const displayTitle = reproductionDisplayTitle(config);
   return `
-    <button type="button" class="reproduction-card" data-reproduction-preset="${config.id}" aria-label="Open ${config.name} in Lab">
+    <button type="button" class="reproduction-card" data-reproduction-preset="${config.id}" aria-label="${ui(`Open ${config.name} in Lab`, `${localizedPresetName(config)}をラボで開く`)}">
       <div class="reproduction-card-copy">
         <div class="reproduction-figure">${figureLabel}</div>
         <div class="reproduction-title">${displayTitle}</div>
@@ -1586,10 +1755,10 @@ function reproductionCardTemplate(config: PhaseFieldConfig): string {
         ${
           gpuThumbnail
             ? `<div class="reproduction-thumb-pair">
-                ${reproductionThumbItem(thumbnail, figureLabel, 'CPU implicit-T')}
-                ${reproductionThumbItem(gpuThumbnail, figureLabel, 'WebGPU explicit-T')}
+                ${reproductionThumbItem(thumbnail, figureLabel, ui('CPU implicit-T', 'CPU・T陰解法'))}
+                ${reproductionThumbItem(gpuThumbnail, figureLabel, ui('WebGPU explicit-T', 'WebGPU・T陽解法'))}
               </div>`
-            : `${reproductionThumbFrame(thumbnail, figureLabel)}<div class="reproduction-thumb-label">${thumbnail?.label ?? 'run in Lab'}</div>`
+            : `${reproductionThumbFrame(thumbnail, figureLabel)}<div class="reproduction-thumb-label">${localizedThumbnailLabel(thumbnail?.label)}</div>`
         }
       </div>
     </button>
@@ -1611,7 +1780,7 @@ function reproductionThumbFrame(thumbnail: ReproductionThumbnail | undefined, fi
       ${
         thumbnail
           ? `<img src="${thumbnail.src}" alt="${figureLabel} ${thumbnail.label}" />`
-          : '<div class="reproduction-thumb-placeholder">Preview<br />pending</div>'
+          : `<div class="reproduction-thumb-placeholder">${ui('Preview<br />pending', 'プレビュー<br />未作成')}</div>`
       }
     </div>
   `;
@@ -1623,7 +1792,7 @@ function shortFigureLabel(label: string): string {
 }
 
 function reproductionDisplayTitle(config: PhaseFieldConfig): string {
-  return config.name
+  return localizedPresetName(config)
     .replace(/^K1993\s+Fig\.\d+(?:\(\d+\))?\s*/i, '')
     .replace(/^Kobayashi\s+1993\s+Fig\.\d+(?:\(\d+\))?\s*/i, '')
     .trim();
@@ -1631,19 +1800,22 @@ function reproductionDisplayTitle(config: PhaseFieldConfig): string {
 
 function reproductionParameterRows(config: PhaseFieldConfig): Array<{ label: string; value: string }> {
   const rows = [
-    { label: 'mesh', value: meshLabel(config) },
-    { label: 'domain', value: domainSizeLabel(config) },
+    { label: ui('mesh', 'メッシュ'), value: meshLabel(config) },
+    { label: ui('domain', '計算領域'), value: domainSizeLabel(config) },
     { label: 'dx / dt', value: `${compactNumber(config.dx)} / ${compactNumber(config.dt)}` },
     { label: 'K', value: compactNumber(config.latentHeat) },
-    { label: 'anisotropy', value: anisotropyLabel(config) },
-    { label: 'noise', value: `a=${compactNumber(config.noiseAmplitude)}, seed=${config.seed}` },
-    { label: 'boundary', value: `${boundaryLabel(config.boundaryCondition)}, ${placementLabel(config)} ${nucleusSizeLabel(config)}` }
+    { label: ui('anisotropy', '異方性'), value: anisotropyLabel(config) },
+    { label: ui('noise', 'ノイズ'), value: `a=${compactNumber(config.noiseAmplitude)}, seed=${config.seed}` },
+    { label: ui('boundary', '境界・初期核'), value: `${boundaryLabel(config.boundaryCondition)}, ${placementLabel(config)} ${nucleusSizeLabel(config)}` }
   ];
 
   if (config.nucleusPlacement === 'left-wall' && config.frontPerturbationAmplitude > 0) {
     rows.push({
-      label: 'initial front',
-      value: `${config.frontPerturbationModeCount} cosine modes, phase=${angleLabel(config.frontPerturbationPhase)}`
+      label: ui('initial front', '初期界面'),
+      value: ui(
+        `${config.frontPerturbationModeCount} cosine modes, phase=${angleLabel(config.frontPerturbationPhase)}`,
+        `余弦${config.frontPerturbationModeCount}モード、位相=${angleLabel(config.frontPerturbationPhase)}`
+      )
     });
   }
 
@@ -1659,11 +1831,85 @@ function webGpuReproductionThumbnail(thumbnail: ReproductionThumbnail | undefine
   const src = thumbnail.src.replace('/reproductions/', '/reproductions/webgpu/');
   return {
     src: `${src}?v=${WEBGPU_REPRODUCTION_VERSION}`,
-    label: 'WebGPU explicit-T final state'
+    label: ui('WebGPU explicit-T final state', 'WebGPU・T陽解法の最終状態')
   };
 }
 
+function localizedThumbnailLabel(label: string | undefined): string {
+  if (!label) return ui('run in Lab', 'ラボで実行');
+  if (!isJapanese()) return label;
+  if (label.includes('CPU implicit-T / WebGL')) return 'CPU・T陰解法 / WebGL画像';
+  if (label.includes('CPU implicit-T')) return 'CPU・T陰解法の最終状態';
+  if (label.includes('WebGPU explicit-T')) return 'WebGPU・T陽解法の最終状態';
+  return label;
+}
+
+function localizedReproductionGroup(group: ReproductionGroup): ReproductionGroup {
+  if (!isJapanese()) return group;
+  const copies: Record<string, Pick<ReproductionGroup, 'title' | 'description'>> = {
+    'Fig.3-4: planar validation': {
+      title: 'Fig.3-4：平面界面の検証',
+      description: 'デンドライト条件へ進む前に、全壁冷却と左壁冷却による平面界面を確認します。'
+    },
+    'Fig.5: isotropic directional solidification': {
+      title: 'Fig.5：等方的な方向凝固',
+      description: '断熱された過冷却融液の長方形流路で、安定平面から枝の競合までKを変化させます。'
+    },
+    'Fig.6: four-fold anisotropic directional solidification': {
+      title: 'Fig.6：4回対称異方性を持つ方向凝固',
+      description: 'Fig.5と同じ流路に、delta = 0.050の4回対称異方性を加えます。'
+    },
+    'Fig.7: four-fold anisotropy strength': {
+      title: 'Fig.7：4回対称異方性の強さ',
+      description: '底辺核、K = 2.0、標準界面ノイズの条件でdeltaを変化させます。'
+    },
+    'Fig.8: six-fold anisotropy': {
+      title: 'Fig.8：6回対称異方性',
+      description: '中央核と6回対称異方性を用い、凸六角形から雪片状分岐までKを変化させます。'
+    },
+    'Fig.9-10: side-branch noise comparison': {
+      title: 'Fig.9-10：サイドブランチとノイズの比較',
+      description: '底辺から成長する4回対称デンドライトで、ノイズ感度と振動性サイドブランチを比較します。'
+    }
+  };
+  return { ...group, ...(copies[group.title] ?? {}) };
+}
+
+function k2002AssetTitle(asset: K2002Asset): string {
+  if (!isJapanese()) return asset.title;
+  return asset.presetId === 'paper-fig9-3d-left-target'
+    ? 'Fig.9左：等方3D核'
+    : 'Fig.9右：4回対称3D推定条件';
+}
+
+function k2002AssetSubtitle(asset: K2002Asset): string {
+  if (!isJapanese()) return asset.subtitle;
+  return asset.presetId === 'paper-fig9-3d-left-target'
+    ? '底面中央に核を置いた全領域3D計算を、公開WebGLアニメーションとして再現しています。'
+    : '1/4領域を計算し、表示時にx-y方向へ反転しています。z軸は左から右へ表示します。';
+}
+
+function k2002AssetNotes(asset: K2002Asset): string[] {
+  if (!isJapanese()) return asset.notes;
+  return asset.presetId === 'paper-fig9-3d-left-target'
+    ? [
+        '図との比較から選んだ推定パラメータ',
+        '160 x 160 x 100メッシュ',
+        '計算領域 4.8 x 4.8 x 3.0',
+        'K=2.5, delta=0, a=0.01, r=7',
+        't=0.4、30 fps・200フレーム'
+      ]
+    : [
+        '図との比較から選んだ推定パラメータ',
+        '50 x 50 x 200の1/4領域メッシュ',
+        '表示領域 100 x 100 x 200',
+        'K=3.5, delta=0.020, a=0.005, r=7',
+        't=0.9、30 fps・450フレーム'
+      ];
+}
+
 function threeDModelNotes(): string {
+  if (isJapanese()) return threeDModelNotesJapanese();
   return `
         <h2>3D method and visualization</h2>
         <p>The 3D implementation is the browser extension of the same phase-field system. It is documented here rather than as a separate preset page: K2002 final states live in Reproductions, and Lab is the place to load a target and then change parameters.</p>
@@ -1732,17 +1978,86 @@ function threeDModelNotes(): string {
   `;
 }
 
+function threeDModelNotesJapanese(): string {
+  return `
+        <h2>3Dの計算法と可視化</h2>
+        <p>3D実装は、同じフェーズフィールド系をブラウザ上で3次元へ拡張したものです。K2002の最終状態は「再現図」で表示し、ラボでは対象プリセットを読み込んでパラメータを変更できます。</p>
+        <section class="method-grid" aria-label="3Dソルバーの計算法">
+          <div class="method-card">
+            <h2>状態変数と格子</h2>
+            <p>${mathInline('<mrow><mi>p</mi><mo stretchy="false">(</mo><mi>x</mi><mo>,</mo><mi>y</mi><mo>,</mo><mi>z</mi><mo stretchy="false">)</mo></mrow>', 'p as a function of x y z')}と${mathInline('<mrow><mi>T</mi><mo stretchy="false">(</mo><mi>x</mi><mo>,</mo><mi>y</mi><mo>,</mo><mi>z</mi><mo stretchy="false">)</mo></mrow>', 'temperature as a function of x y z')}を、平坦な<code>Float32Array</code>として保持します。格子幅は${mathInline('<mrow><mi mathvariant="normal">Δx</mi><mo>=</mo><mi mathvariant="normal">Δy</mi><mo>=</mo><mi mathvariant="normal">Δz</mi></mrow>', 'uniform grid spacing')}です。K2002 Fig.9右型では、<code>x</code>と<code>y</code>のノイマン対称面を使って1/4領域だけを計算し、表示時だけ反転します。Fig.9左は底面中央核を持つ全領域計算で、x-y反転は行いません。</p>
+          </div>
+          <div class="method-card">
+            <h2>フェーズ場の更新</h2>
+            ${explicitPhaseStepMath()}
+            <p>${mathInline('<mi>p</mi>', 'p')}は、異方性流束の発散、反応項、決定論的に再現可能な界面局在ノイズから陽的に更新します。構成は単純ですが、大きな${mathInline('<mrow><mi mathvariant="normal">Δt</mi></mrow>', 'time step')}、強い異方性、大規模3D格子では安定性に注意が必要です。</p>
+          </div>
+          <div class="method-card">
+            <h2>温度場の更新</h2>
+            ${mathBlock(implicitTemperatureMathMarkup(), 'implicit temperature update equation')}
+            <p>ノイマン境界では省メモリ型ICCGを使い、温度固定境界ではヤコビ反復へ切り替えます。潜熱増分${mathInline('<mrow><mi>K</mi><mi>Δ</mi><mi>p</mi></mrow>', 'K delta p')}は温度更新に結合しますが、${mathInline('<mi>p</mi>', 'p')}自体は陰解法にはしていません。</p>
+          </div>
+          <div class="method-card">
+            <h2>3D異方性</h2>
+            <p>4回対称の3D対象には、${mathInline('<mrow><mi>v</mi><mo>=</mo><mo>-</mo><mo>∇</mo><mi>p</mi></mrow>', 'v equals minus gradient p')}としてK2002のベクトル形式${cite('K2002')}を使います。</p>
+            ${sigma3DMath()}
+            ${anisotropicFlux3DMath()}
+            <p>流束には${mathInline('<mi>σ</mi>', 'sigma')}の${mathInline('<mi>v</mi>', 'v')}に関する微分も含まれるため、座標軸方向が優先成長方向になります。</p>
+          </div>
+          <div class="method-card">
+            <h2>レンダリング</h2>
+            <p>「等値面」は、補間した${mathInline('<mrow><mi>p</mi><mo>=</mo><mn>0.5</mn></mrow>', 'p equals zero point five')}面をthree.jsの<code>BufferGeometry</code>として描画します。「断面」は3枚のスカラー断面を表示します。「ボリューム」は${mathInline('<mi>p</mi>', 'p')}をthree.jsの<code>Data3DTexture</code>へ転送し、WebGL2のGLSLフラグメントシェーダーでレイマーチングします。K2002 Fig.9左の提示用表示も同じWebGL等値面レンダラーを使い、青い背景、金色の材質、ほぼ鉛直なシミュレーション<code>z</code>軸で表示します。</p>
+          </div>
+          <div class="method-card">
+            <h2>出力</h2>
+            <p>ラボから、現在の表示をPNG、パラメータをJSON、全場を<code>.pfstate</code>、等値面をバイナリSTLとして出力できます。反転STLでは、x-y対称な1/4領域を表示用の全領域へ展開します。</p>
+          </div>
+        </section>
+
+        <section class="method-grid" aria-label="3D可視化の補足">
+          <div class="method-card">
+            <h2>ビューアの操作</h2>
+            <p>最終状態ビューアはOrbitControlsで回転・拡大します。提示用の向きはカメラの上方向ではなくモデル側へ適用するため、マウス操作は画面の向きに一致します。K2002右ビューアではシミュレーション<code>z</code>軸を左から右へ、左ビューアではほぼ上向きに表示します。</p>
+          </div>
+          <div class="method-card">
+            <h2>公開データ</h2>
+            <p>公開3Dデータは、本シミュレータで生成したMP4、ポスターPNG、最終状態場ファイル、ダウンロード可能な<code>p=0.5</code>のSTL等値面です。STLは論文図ではなく、公開している同じ<code>.pfstate</code>最終状態から生成しています。</p>
+          </div>
+          <div class="method-card">
+            <h2>探索条件の扱い</h2>
+            <p>資料から得られなかったK2002のパラメータは推定値と明記します。今後のKや${mathInline('<mi>δ</mi>', 'delta')}の掃引は、追加の論文再現ではなく、Fig.9右型の探索計算として扱います。</p>
+          </div>
+          <div class="method-card">
+            <h2>WebGPUによるGPGPU計算</h2>
+            <p>WebGPUバックエンドは陽的ステンシルソルバーです。各compute invocationは、前ステップの${mathInline('<mi>p</mi>', 'p')}と${mathInline('<mi>T</mi>', 'temperature')}から1格子点を更新し、近傍点だけを読み、次のバッファへ書き込みます。各ステップでバッファを交換します。この局所的で一様な処理はGPGPUで並列化しやすい部分です。</p>
+            <p>CPU再現経路では温度拡散をICCGまたはヤコビ反復で陰的に解くため大きな<code>dt</code>を使えますが、連立一次方程式の反復と同期が必要です。WebGPU経路は温度も陽的に更新し、小さな<code>dt</code>を多数並列に進めます。</p>
+          </div>
+          <div class="method-card">
+            <h2>WebGPUの表示間隔</h2>
+            <p>WebGPUの温度更新は陽解法なので、<code>dt</code>は拡散と潜熱フィードバックから定まる安定限界より小さくする必要があります。大きな<code>K</code>は<code>K Δp</code>結合を強めるため、より小さな<code>dt</code>が必要です。アプリはこの差を隠さず、WebGPU選択時に<code>dt</code>を下げます。</p>
+            <p>それでもWebGPUは、表示1回の間に多数の小ステップを進められるため高速です。大きな<code>steps/frame</code>は<code>dt</code>を変えず、読み戻しとMarching Cubesの負荷をより長いモデル時間へ分散します。K2002 3DのWebGPU既定値は<code>dt=5e-5</code>で、Fig.9左が<code>steps/frame=500</code>、右が<code>steps/frame=1000</code>です。</p>
+          </div>
+          <div class="method-card">
+            <h2>ブラウザでの計算時間</h2>
+            <p>公開3D再現メディアはCPU・温度陰解法で生成しました。開発機のApple M1 Maxでは、TypeScript/WebGLアニメーションの所要時間は、K2002 Fig.9左の<code>160 x 160 x 100</code>・2000ステップで約44分、Fig.9右の<code>50 x 50 x 200</code>・4500ステップで約48分でした。ラボの実験的3D WebGPUバックエンドは探索計算を高速化できますが、温度陽解法であり公開再現サンプルの計算経路とは異なります。</p>
+          </div>
+        </section>
+
+        <p class="reproduction-note">K2002の最終状態は「再現図」、パラメータを変えたライブ計算は「ラボ」を使ってください。説明済みの計算法と暫定的なプリセット探索を混同しないため、このページは手法の説明に限定しています。</p>
+  `;
+}
+
 function threeDPresetRows(config: PhaseFieldConfig): Array<{ label: string; value: string }> {
   return [
-    { label: 'mesh', value: meshLabel(config) },
-    { label: 'domain', value: domainSizeLabel(config) },
+    { label: ui('mesh', 'メッシュ'), value: meshLabel(config) },
+    { label: ui('domain', '計算領域'), value: domainSizeLabel(config) },
     { label: 'dx / dt', value: `${compactNumber(config.dx)} / ${compactNumber(config.dt)}` },
-    { label: 'solver', value: `${config.temperatureSolver ?? 'iccg'} T, explicit p` },
+    { label: ui('solver', 'ソルバー'), value: ui(`${config.temperatureSolver ?? 'iccg'} T, explicit p`, `${config.temperatureSolver ?? 'iccg'}・T、p陽解法`) },
     { label: 'K / tau', value: `${compactNumber(config.latentHeat)} / ${compactNumber(config.tau)}` },
-    { label: 'anisotropy', value: anisotropyLabel(config) },
-    { label: 'noise', value: `a=${compactNumber(config.noiseAmplitude)}, seed=${config.seed}` },
-    { label: 'nucleus', value: `${placementLabel(config)} ${nucleusSizeLabel(config)}` },
-    { label: 'render', value: renderModeLabel(config.renderMode3D) }
+    { label: ui('anisotropy', '異方性'), value: anisotropyLabel(config) },
+    { label: ui('noise', 'ノイズ'), value: `a=${compactNumber(config.noiseAmplitude)}, seed=${config.seed}` },
+    { label: ui('nucleus', '初期核'), value: `${placementLabel(config)} ${nucleusSizeLabel(config)}` },
+    { label: ui('render', '表示'), value: renderModeLabel(config.renderMode3D) }
   ];
 }
 
@@ -1760,7 +2075,10 @@ function domainSizeLabel(config: PhaseFieldConfig): string {
   const z = config.nz * config.dx;
   const quarterDomain = `${compactNumber(x)} x ${compactNumber(y)} x ${compactNumber(z)}`;
   if (isXYMirroredQuarterDomain(config)) {
-    return `quarter ${quarterDomain}; mirrored ${compactNumber(2 * x)} x ${compactNumber(2 * y)} x ${compactNumber(z)}`;
+    return ui(
+      `quarter ${quarterDomain}; mirrored ${compactNumber(2 * x)} x ${compactNumber(2 * y)} x ${compactNumber(z)}`,
+      `1/4領域 ${quarterDomain}、反転表示 ${compactNumber(2 * x)} x ${compactNumber(2 * y)} x ${compactNumber(z)}`
+    );
   }
   return quarterDomain;
 }
@@ -1773,32 +2091,35 @@ function nucleusSizeLabel(config: PhaseFieldConfig): string {
   const physicalRadius = config.nucleusRadius * config.dx;
   const label =
     config.nucleusPlacement === 'left-wall'
-      ? 'front thickness'
+      ? ui('front thickness', '界面厚さ')
       : config.nucleusPlacement === 'walls'
-        ? 'wall thickness'
+        ? ui('wall thickness', '壁面厚さ')
         : 'r';
-  return `${label}=${compactNumber(config.nucleusRadius)} cells (${compactNumber(physicalRadius)} units)`;
+  return ui(
+    `${label}=${compactNumber(config.nucleusRadius)} cells (${compactNumber(physicalRadius)} units)`,
+    `${label}=${compactNumber(config.nucleusRadius)}セル（${compactNumber(physicalRadius)}モデル長）`
+  );
 }
 
 function anisotropyLabel(config: PhaseFieldConfig): string {
-  if (config.anisotropyMode === 'isotropic' || config.anisotropyStrength === 0) return 'isotropic';
+  if (config.anisotropyMode === 'isotropic' || config.anisotropyStrength === 0) return t('isotropic');
   return `delta=${compactNumber(config.anisotropyStrength)}, j=${config.anisotropyFold}, theta0=${angleLabel(config.anisotropyAngle)}`;
 }
 
 function boundaryLabel(boundary: BoundaryCondition): string {
-  if (boundary === 'neumann') return 'no-flux';
-  if (boundary === 'left-fixed-temperature') return 'left fixed T';
-  return 'fixed T edge';
+  if (boundary === 'neumann') return t('noFlux');
+  if (boundary === 'left-fixed-temperature') return t('leftFixedTemperature');
+  return ui('fixed T edge', '境界温度固定');
 }
 
 function placementLabel(config: PhaseFieldConfig): string {
-  if (config.nucleusPlacement === 'left-wall') return 'left front';
-  if (config.nucleusPlacement === 'bottom-edge') return 'bottom seed';
-  if (config.nucleusPlacement === 'walls') return 'wall seed';
-  if (config.nucleusPlacement === 'bottom-corner-halfcell') return 'corner half-cell seed';
-  if (config.nucleusPlacement === 'bottom-face-center-halfcell') return 'bottom-face center half-cell seed';
-  if (config.nucleusPlacement === 'bottom-corner') return 'corner seed';
-  return 'center seed';
+  if (config.nucleusPlacement === 'left-wall') return ui('left front', '左壁界面');
+  if (config.nucleusPlacement === 'bottom-edge') return ui('bottom seed', '底辺核');
+  if (config.nucleusPlacement === 'walls') return ui('wall seed', '壁面核');
+  if (config.nucleusPlacement === 'bottom-corner-halfcell') return ui('corner half-cell seed', '角・半セル外核');
+  if (config.nucleusPlacement === 'bottom-face-center-halfcell') return ui('bottom-face center half-cell seed', '底面中央・半セル外核');
+  if (config.nucleusPlacement === 'bottom-corner') return ui('corner seed', '角核');
+  return ui('center seed', '中央核');
 }
 
 function angleLabel(value: number): string {
@@ -2022,6 +2343,7 @@ function initialConditionMath(): string {
 }
 
 function modelTemplate(): string {
+  if (isJapanese()) return modelTemplateJapanese();
   return `
     <article class="content-page">
       <div class="content-inner">
@@ -2070,12 +2392,64 @@ function modelTemplate(): string {
   `;
 }
 
+function modelTemplateJapanese(): string {
+  return `
+    <article class="content-page">
+      <div class="content-inner">
+        <h1>モデルと手法</h1>
+        <p>このシミュレータは、小林亮のフェーズフィールド・デンドライトモデル${cite('K1993')} ${cite('K2002')}をブラウザ上で定性的に実装したものです。異方性、潜熱、熱拡散、界面ノイズがデンドライト成長へ与える影響を調べるためのもので、較正済みの実用材料計算ソルバーではありません。</p>
+        <h2>場の変数</h2>
+        <p>${mathInline('<mi>p</mi>', 'p')}はフェーズ場です。本アプリでは液相を${mathInline('<mrow><mi>p</mi><mo>=</mo><mn>0</mn></mrow>', 'p equals zero')}、固相を${mathInline('<mrow><mi>p</mi><mo>=</mo><mn>1</mn></mrow>', 'p equals one')}とし、${mathInline('<mrow><mi>p</mi><mo>=</mo><mn>0.5</mn></mrow>', 'p equals zero point five')}付近を固液界面として描画します。界面を格子上の連続場で表すため、移動曲線や移動曲面を直接追跡せずに、先端分裂やサイドブランチを扱えます。</p>
+        <p>${mathInline('<mi>T</mi>', 'temperature')}は温度または過冷却に関係する場です。凝固が進むと、${mathInline('<mfrac><mrow><mo>∂</mo><mi>p</mi></mrow><mrow><mo>∂</mo><mi>t</mi></mrow></mfrac>', 'partial p over partial time')}に比例する潜熱が${mathInline('<mi>T</mi>', 'temperature')}へ戻り、その温度場が後続の界面成長へフィードバックします。</p>
+        <h2>定性的な支配方程式</h2>
+        <div class="equation-block">
+          ${phaseEquationMath()}
+          ${temperatureEquationMath()}
+          ${driveEquationMath()}
+          <dl class="phase-state-list">
+            <div><dt>${mathInline('<mrow><mi>p</mi><mo>=</mo><mn>0</mn></mrow>', 'p equals zero')}</dt><dd>液相</dd></div>
+            <div><dt>${mathInline('<mrow><mi>p</mi><mo>=</mo><mn>1</mn></mrow>', 'p equals one')}</dt><dd>固相</dd></div>
+            <div><dt>${mathInline('<mrow><mi>p</mi><mo>=</mo><mn>0.5</mn></mrow>', 'p equals zero point five')}</dt><dd>描画する界面</dd></div>
+          </dl>
+        </div>
+        <h2>初期条件</h2>
+        <p>${mathInline('<mi>p</mi>', 'p')}の初期値は硬い二値マスクではなく、拡散界面として与えます。K2002の有限差分モデル${cite('K2002')}と同じフェーズフィールドの考え方で、固相核の内部を${mathInline('<mrow><mi>p</mi><mo>=</mo><mn>1</mn></mrow>', 'p equals one')}付近、周囲の液相を${mathInline('<mrow><mi>p</mi><mo>=</mo><mn>0</mn></mrow>', 'p equals zero')}付近とし、可視界面で${mathInline('<mrow><mi>p</mi><mo>=</mo><mn>0.5</mn></mrow>', 'p equals zero point five')}を横切ります。</p>
+        ${initialConditionMath()}
+        <p>ここで${mathInline('<mi>d</mi>', 'd')}は形状に応じた距離です。円形・球形核では中心からの距離、摂動を持つ左壁界面では符号付き距離、壁面から内向きに成長する条件では最近接壁までの距離です。${mathInline('<msub><mi>r</mi><mn>0</mn></msub>', 'r zero')}はメッシュセル単位の核半径または壁面・界面厚さ、${mathInline('<mi>w</mi>', 'w')}はメッシュセル単位の数値的な拡散界面幅です。</p>
+        <p><code>r=7</code>は、初期核の半径が7セルであることを表します。物理半径は${mathInline('<mrow><mi>r</mi><mo>×</mo><mi mathvariant="normal">Δx</mi></mrow>', 'r times delta x')}なので、論文対象条件の<code>dx=0.03</code>では<code>0.21</code>モデル長です。2D底辺核は底辺ノイマン壁で切られた滑らかな半円、中央核は滑らかな円、3Dでは境界対称性を適用する前の滑らかな球です。</p>
+        <p>核半径は再現のための推定パラメータです。比較計算では<code>r</code>を変えると、初期形状、下壁との隙間、後期のサイドブランチ密度が変化しました。現在のK1993デンドライト群とK2002 Fig.9右の3D推定条件は共通して<code>r=7</code>を使い、図ごとの差が独立に調整した核サイズではなく、主に<code>K</code>、異方性、ノイズ、形状から生じるようにしています。</p>
+        <p>K2002 Fig.9右の3D推定条件では、この<code>r=7</code>の滑らかな球をx、y、zのノイマン面より半セル外側へ中心配置します。全領域表示とSTLではxとyだけを反転するため、表示物体は1/4領域計算のx-y対称展開です。初期温度場はプリセット値で一様にし、温度固定境界は境界上へ設定します。潜熱は初期場へ加えず、時間更新中に${mathInline('<mrow><mi>K</mi><mi>Δ</mi><mi>p</mi></mrow>', 'K delta p')}として入ります。</p>
+        <h2>論文図の検証順序</h2>
+        <p>検証はK1993の平面界面条件から始め、その後デンドライト条件へ進めました${cite('K1993')}。Fig.3は<code>9.0 x 9.0</code>領域、<code>300 x 300</code>メッシュで、冷却壁から内向きに成長します。Fig.4は<code>12.0 x 3.0</code>領域、<code>400 x 100</code>メッシュで、摂動を持つ左壁固相界面と左壁温度固定条件を使います。Fig.5では等方条件の<code>K=0.8</code>から<code>K=2.0</code>まで9条件を計算し、Fig.6では同じ系列に<code>delta=0.050</code>の4回対称異方性を加えます。</p>
+        <p>K2002 Fig.9右の3D対象は、報告された厳密値ではなく推定プリセットです。<code>K=3.5</code>、<code>delta=0.020</code>、<code>a=0.005</code>、<code>r=7</code>、<code>dx=0.03</code>、<code>dt=0.0002</code>、<code>50 x 50 x 200</code>の1/4領域メッシュを使います。物理的な1/4領域は<code>1.5 x 1.5 x 6.0</code>で、反転表示とSTLは<code>100 x 100 x 200</code>、<code>3.0 x 3.0 x 6.0</code>に対応します。</p>
+        <h2>異方性とノイズ</h2>
+        <p>2Dでは${epsilon2DMath()}を使います${cite('K1993')}。異方性拡散項はK2002の半格子流束形式で離散化し、${mathInline('<msub><mi>p</mi><mrow><mi>i</mi><mo>+</mo><mfrac><mn>1</mn><mn>2</mn></mfrac><mo>,</mo><mi>j</mi></mrow></msub>', 'p at i plus one half j')}と${mathInline('<msub><mi>q</mi><mrow><mi>i</mi><mo>,</mo><mi>j</mi><mo>+</mo><mfrac><mn>1</mn><mn>2</mn></mfrac></mrow></msub>', 'q at i j plus one half')}を作ってから発散を取ります${cite('K2002')}。${mathInline('<mrow><mi>j</mi><mo>=</mo><mn>4</mn></mrow>', 'j equals four')}、${mathInline('<mrow><msub><mi>θ</mi><mn>0</mn></msub><mo>=</mo><mn>0</mn></mrow>', 'theta zero equals zero')}では、水平・鉛直軸が優先成長方向です。</p>
+        <p>K1993対象プリセットでは、得られる範囲で報告値を使います。${mathInline('<mrow><mi mathvariant="normal">Δx</mi><mo>=</mo><mn>0.03</mn></mrow>', 'delta x equals zero point zero three')}、${mathInline('<mrow><mi mathvariant="normal">Δt</mi><mo>=</mo><mn>0.0002</mn></mrow>', 'delta t equals zero point zero zero zero two')}、${mathInline('<mrow><mover><mi>ε</mi><mo>¯</mo></mover><mo>=</mo><mn>0.01</mn></mrow>', 'epsilon bar equals zero point zero one')}、${mathInline('<mrow><mi>τ</mi><mo>=</mo><mn>0.0003</mn></mrow>', 'tau equals zero point zero zero zero three')}、${mathInline('<mrow><mi>α</mi><mo>=</mo><mn>0.9</mn></mrow>', 'alpha equals zero point nine')}、${mathInline('<mrow><mi>γ</mi><mo>=</mo><mn>10.0</mn></mrow>', 'gamma equals ten')}に、図ごとの${mathInline('<mi>δ</mi>', 'delta')}、${mathInline('<mi>K</mi>', 'K')}、${mathInline('<mi>j</mi>', 'j')}、境界条件を組み合わせます${cite('K1993')}。底辺核は二値半円ではなく、滑らかなtanh形状です。2Dソルバーは${mathInline('<mi>p</mi>', 'p')}を陽的に更新し、その後${implicitTemperatureMath()}をノイマン境界ではICCG、温度固定境界ではヤコビ反復で解きます。</p>
+        <p>ノイズは${mathInline('<mfrac><mrow><mo>∂</mo><mi>p</mi></mrow><mrow><mo>∂</mo><mi>t</mi></mrow></mfrac>', 'partial p over partial time')}側へ加え、界面速度のゆらぎに対応させます${cite('K1993')}。${mathInline('<mrow><mi>p</mi><mo stretchy="false">(</mo><mn>1</mn><mo>-</mo><mi>p</mi><mo stretchy="false">)</mo></mrow>', 'p times one minus p')}で局在させるため、バルク液相・固相ではなく拡散界面付近に作用します。Fig.7では論文既定の独立ノイズ振幅${mathInline('<mrow><mi>a</mi><mo>=</mo><mn>0.010</mn></mrow>', 'a equals zero point zero one zero')}、Fig.10では${mathInline('<mrow><mi>a</mi><mo>=</mo><mn>0</mn></mrow>', 'a equals zero')}、${mathInline('<mrow><mi>a</mi><mo>=</mo><mn>0.001</mn></mrow>', 'a equals zero point zero zero one')}、${mathInline('<mrow><mi>a</mi><mo>=</mo><mn>0.010</mn></mrow>', 'a equals zero point zero one zero')}を比較します。</p>
+        <h2>WebGPU / GPGPU経路</h2>
+        <p>WebGPUが利用できる環境では、ラボの2D・3Dとも実験的WebGPUバックエンドを既定にします。WebGPUはGPGPUステンシル計算として使い、compute shaderの1 invocationが前ステップの${mathInline('<mi>p</mi>', 'p')}と${mathInline('<mi>T</mi>', 'temperature')}の局所近傍を読み、1格子点を次バッファへ書きます。その後バッファを交換します。同じ局所更新を多数の格子点で並列実行できるためGPUに適しています。</p>
+        <p>CPUの再現用ソルバーは${mathInline('<mi>p</mi>', 'p')}を陽的に進め、${mathInline('<mi>T</mi>', 'temperature')}の拡散を陰的に解きます。陰解法は大きな<code>dt</code>を使えますが、ICCGまたはヤコビ法による連立一次方程式の反復と同期が必要です。WebGPUでは温度も陽的に更新するため小さな<code>dt</code>が必要ですが、各ステップを大規模並列に計算できます。</p>
+        <p>WebGPU選択時は、温度陽解法の安定性推定に合わせて<code>dt</code>を下げ、表示上のモデル時間を確保するため<code>steps/frame</code>を増やします。温度陽解法には拡散項と潜熱項<code>K Δp</code>が含まれるため、大きな<code>K</code>ではより小さな<code>dt</code>が必要です。</p>
+        <p>独立な界面ノイズはソルバーステップごとに生成します。compute shaderへ渡す前に${mathInline('<mrow><msub><mi>a</mi><mtext>eff</mtext></msub><mo>=</mo><mi>a</mi><msqrt><mfrac><msub><mi mathvariant="normal">Δt</mi><mtext>ref</mtext></msub><mi mathvariant="normal">Δt</mi></mfrac></msqrt></mrow>', 'effective a equals a times the square root of reference delta t divided by delta t')}で振幅を調整し、<code>dt</code>を変えてもモデル時間あたりのノイズ分散尺度を保ちます。したがって<code>dt: 2e-4 → 5e-5</code>では<code>2a</code>を渡し、<code>a=0</code>は0のままです。この処理は2D・3D WebGPUの両方に適用され、<code>steps/frame</code>とは独立です。WebGPUは対話的探索用であり、論文対象の再現主張や公開サンプル画像には使いません。</p>
+        <h2>境界条件</h2>
+        <p>${mathInline('<mi>p</mi>', 'p')}には、K1993の流束0条件に従って常にノイマン境界を使います。${mathInline('<mi>T</mi>', 'temperature')}はプリセットに応じて、断熱・流束なし、境界温度固定、左壁温度固定を選びます。Fig.7、Fig.8、Fig.9、Fig.10の論文対象プリセットは、過冷却融液の断熱境界条件です。</p>
+        ${threeDModelNotes()}
+        <h2>安定性の限界</h2>
+        <p>CPU経路の温度拡散は陰解法ですが、フェーズ方程式は陽的な有限差分更新です。大きな${mathInline('<mrow><mi mathvariant="normal">Δt</mi></mrow>', 'time step')}、強い異方性、大きなノイズ、高解像度3D格子では不安定になる場合があります。本アプリは数値不安定性を描画平滑化で隠しません。不安定になった場合は該当パラメータを下げてください。</p>
+      </div>
+    </article>
+  `;
+}
+
 function referencesTemplate(): string {
   return `
     <article class="content-page">
       <div class="content-inner">
-        <h1>References</h1>
-        <p>Model explanations and reproduction presets cite the sources below by stable reference key. This app uses bibliographic/source metadata and simulator-generated outputs rather than reproduced paper figures.</p>
+        <h1>${t('references')}</h1>
+        <p>${ui(
+          'Model explanations and reproduction presets cite the sources below by stable reference key. This app uses bibliographic/source metadata and simulator-generated outputs rather than reproduced paper figures.',
+          'モデルの説明と再現プリセットでは、以下の安定した文献キーを使って参照します。本アプリに掲載するのは書誌・出典情報とシミュレータ生成結果であり、論文図の転載ではありません。'
+        )}</p>
         ${referenceList('reference')}
       </div>
     </article>

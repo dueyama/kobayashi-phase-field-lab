@@ -6,6 +6,11 @@ All notable user-facing changes to Phase-Field Dendrite Lab are recorded here.
 
 ### Added
 
+- Japanese localization throughout the web app, with English/Japanese
+  switching for Lab controls, reproduction cards, preset notes, Model &
+  Method, References, and runtime messages.
+- Browser-language detection on first visit and persistent language preference
+  for later visits.
 - Experimental WebGPU backends for 2D and 3D phase-field stepping.
 - Runtime backend status and solver throughput readouts in Lab.
 - Responsive runtime profiles for desktop and mobile devices.

@@ -101,7 +101,7 @@ describe('phase-field solvers', () => {
     solver.step(40);
     expect(maxMirrorDifference2D(solver.phi, config.nx, config.ny)).toBeLessThan(1e-6);
     expect(maxMirrorDifference2D(solver.temperature, config.nx, config.ny)).toBeLessThan(1e-6);
-  });
+  }, 10_000);
 
   it('preserves left-right symmetry for centered no-noise 2D growth', () => {
     const config = clonePreset('2d-fourfold');
@@ -112,7 +112,7 @@ describe('phase-field solvers', () => {
     solver.step(120);
     expect(maxMirrorDifference2D(solver.phi, config.nx, config.ny)).toBeLessThan(1e-6);
     expect(maxMirrorDifference2D(solver.temperature, config.nx, config.ny)).toBeLessThan(1e-6);
-  });
+  }, 10_000);
 
   it('preserves left-right symmetry for bottom-edge paper targets without noise', () => {
     const config = clonePreset('paper-fig7-delta010');

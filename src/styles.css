@@ -137,6 +137,43 @@ button {
   min-width: 0;
 }
 
+.language-switch {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: stretch;
+  height: 32px;
+  border: 1px solid rgba(142, 206, 238, 0.18);
+  background: rgba(0, 0, 0, 0.22);
+}
+
+.language-switch button {
+  min-width: 42px;
+  border: 0;
+  border-right: 1px solid rgba(142, 206, 238, 0.14);
+  padding: 0 9px;
+  color: var(--muted);
+  background: transparent;
+  font-size: 11px;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.language-switch button:last-child {
+  border-right: 0;
+}
+
+.language-switch button[aria-pressed="true"] {
+  color: var(--text);
+  background: linear-gradient(180deg, rgba(85, 190, 232, 0.26), rgba(20, 44, 58, 0.56));
+  box-shadow: inset 0 0 0 1px rgba(127, 225, 255, 0.22);
+}
+
+.language-switch button:hover,
+.language-switch button:focus-visible {
+  color: var(--cyan-2);
+  outline: 0;
+}
+
 .top-status {
   display: flex;
   align-items: center;
@@ -1320,6 +1357,7 @@ input[type="range"] {
   .top-actions {
     justify-self: stretch;
     justify-content: space-between;
+    flex-wrap: wrap;
   }
 }
 
@@ -1347,6 +1385,7 @@ input[type="range"] {
   .top-actions {
     justify-self: stretch;
     justify-content: space-between;
+    flex-wrap: wrap;
   }
 
   .view-root {
@@ -1447,6 +1486,23 @@ input[type="range"] {
 }
 
 @media (max-width: 640px) {
+  .brand-title {
+    white-space: normal;
+  }
+
+  .top-actions {
+    gap: 8px;
+  }
+
+  .top-status {
+    min-width: 0;
+    white-space: normal;
+  }
+
+  .language-switch {
+    margin-left: auto;
+  }
+
   .nav-tabs {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
