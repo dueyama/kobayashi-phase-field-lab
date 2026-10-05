@@ -24,7 +24,10 @@
   "devDependencies": {
     "@types/three": "^0.180.0",
     "typescript": "^5.9.3",
-    "vite": "^7.2.7",
-    "vitest": "^4.0.15"
+    "vite": "^7.3.6",
+    "vitest": "^4.1.11"
+  },
+  "overrides": {
+    "postcss": "^8.5.28"
   }
 }
